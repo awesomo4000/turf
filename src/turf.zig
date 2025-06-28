@@ -1,9 +1,17 @@
 const std = @import("std");
 const testing = std.testing;
+const util = @import("util.zig");
 
 // External Cocoa bridge functions declared in cocoa_bridge.m
 extern fn NSApplicationLoad() bool;
-extern fn NSCreateWindow(x: c_int, y: c_int, w: c_int, h: c_int, title: [*:0]const u8) void;
+extern fn NSCreateWindow(
+    x: c_int,
+    y: c_int,
+    w: c_int,
+    h: c_int,
+    title: [*:0]const u8,
+    js_inject: [*:0]const u8,
+) void;
 extern fn NSRunApplication() void;
 extern fn NSLoadURL(url: [*:0]const u8) void;
 extern fn NSLoadLocalFile(path: [*:0]const u8) void;
@@ -11,55 +19,41 @@ extern fn NSLoadString(html_content: [*:0]const u8) void;
 extern fn NSEvaluateJavaScript(script: [*:0]const u8) void;
 extern fn NSShowOpenFileDialog() void;
 
-// Helper function to get absolute path
-fn getAbsolutePath(
-    allocator: std.mem.Allocator,
-    path: [:0]const u8,
-) ![:0]const u8 {
-    // Check if path is already absolute (starts with '/')
-    if (path.len > 0 and path[0] == '/') {
-        return allocator.dupeZ(u8, path);
-    }
+var js_ready: bool = false;
+const turf_js_inject = @embedFile("web/turf.js");
 
-    // Get current working directory
-    const cwd = try std.process.getCwdAlloc(allocator);
-    defer allocator.free(cwd);
+const debounce_ms = 1000 * std.time.ns_per_ms;
 
-    // Create absolute path by joining cwd and path
-    const abs_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, path });
-    return allocator.dupeZ(u8, abs_path);
-}
+// Events are sent from the native webview and include events
+// from the Application as well as user-sent events from javascript
 
-// Message handling
-var message_parser_allocator: std.mem.Allocator = undefined;
-var message_parsers = std.StringHashMap(MessageParser).init(undefined);
+// Events sent as messages from the native application from the webview
+const Event = union(enum) {
+    geometry: WindowGeometry,
+    willClose: void,
+};
 
-// Function type for message handlers
-pub const MessageParser = *const fn (allocator: std.mem.Allocator, message: []const u8) anyerror!void;
-
-// Initialize the message parsers
-pub fn initMessageParsers(allocator: std.mem.Allocator) void {
-    message_parser_allocator = allocator;
-    message_parsers = std.StringHashMap(MessageParser).init(allocator);
-}
-
-// Clean up message parsers
-pub fn deinitMessageParsers() void {
-    message_parsers.deinit();
-}
-
-// Register a new message parser
-pub fn registerMessageParser(message_type: []const u8, parser: MessageParser) !void {
-    try message_parsers.put(message_type, parser);
-}
+// Commands sent as messages from the JavaScript code to the native application
+const Command = enum {
+    show_file_dialog,
+};
 
 // Window configuration struct
 pub const WindowConfig = struct {
-    x: i32 = 100,
-    y: i32 = 100,
-    width: i32 = 800,
-    height: i32 = 600,
-    title: [:0]const u8 = "Turf Window",
+    geometry: WindowGeometry = .{
+        .x = 100,
+        .y = 100,
+        .width = 600,
+        .height = 800,
+    },
+    title: [:0]const u8 = "Main Window",
+};
+
+const WindowGeometry = struct {
+    x: i32 = 0,
+    y: i32 = 0,
+    width: i32 = 0,
+    height: i32 = 0,
 };
 
 // Window struct
@@ -67,7 +61,8 @@ pub const Window = struct {
     allocator: std.mem.Allocator,
     config: WindowConfig,
     is_window_created: bool = false,
-
+    //event_handlers: std.StringHashMap(fn (event: Event) void),
+    //geom_change_timer: WindowGeometryEventTimer,
     // Initialize a new window
     pub fn init(allocator: std.mem.Allocator, config: WindowConfig) !Window {
         // Initialize the Cocoa application
@@ -75,33 +70,39 @@ pub const Window = struct {
             return error.CocoaInitFailed;
         }
 
+        // Initialize the module level allocator
+        initModuleAllocator(allocator);
+
         // Initialize the window event timer
-        window_event_timer = try WindowEventTimer.init();
-        try window_event_timer.startThread();
+        //geom_change_timer = try WindowGeometryEventTimer.init();
 
         return Window{
             .allocator = allocator,
             .config = config,
             .is_window_created = false,
+            //.geom_change_timer = geom_change_timer,
         };
     }
 
-    // Clean up window resources
+    // Clean up resources
     pub fn deinit(self: *Window) void {
         _ = self;
+        // Deinitialize the module level allocator
+        // deinitGlobalAllocator();
         // Clean up the window event timer
-        window_event_timer.deinit();
+        //geom_change_timer.deinit();
     }
 
     // Create the native window
     pub fn createWindow(self: *Window) void {
         if (!self.is_window_created) {
             NSCreateWindow(
-                self.config.x,
-                self.config.y,
-                self.config.width,
-                self.config.height,
+                self.config.geometry.x,
+                self.config.geometry.y,
+                self.config.geometry.width,
+                self.config.geometry.height,
                 self.config.title,
+                turf_js_inject,
             );
             self.is_window_created = true;
         }
@@ -124,7 +125,7 @@ pub const Window = struct {
         }
 
         // Convert to absolute path if needed
-        const abs_path = try getAbsolutePath(
+        const abs_path = try util.getAbsolutePath(
             self.allocator,
             path,
         );
@@ -147,7 +148,7 @@ pub const Window = struct {
     }
 
     // Evaluate JavaScript in the window
-    pub fn evaluateJavaScript(self: *Window, script: [:0]const u8) void {
+    pub fn evalJavaScript(self: *Window, script: [:0]const u8) void {
         // Create window if not already created
         if (!self.is_window_created) {
             self.createWindow();
@@ -170,127 +171,175 @@ pub const Window = struct {
         if (!self.is_window_created) {
             self.createWindow();
         }
-
+        //try geom_change_timer.startThread();
         // Run the application
         NSRunApplication();
     }
+
+    // fn on(self: *Window, event: Event, callback: fn (event: Event) void) void {
+    //     self.event_handlers.put(event, callback);
+    // }
+};
+
+const WindowGeometryEvent = struct {
+    payload: WindowGeometry,
 };
 
 // Thread-safe timer for debouncing window events
-const WindowEventTimer = struct {
-    mutex: std.Thread.Mutex = .{},
-    timer: ?std.time.Timer = null,
-    last_event: struct {
-        x: c_int = 0,
-        y: c_int = 0,
-        width: c_int = 0,
-        height: c_int = 0,
-    } = .{},
-    thread: ?std.Thread = null,
-    should_exit: bool = false,
-    js_ready: bool = false,
+// const WindowGeometryEventTimer = struct {
+//     mutex: std.Thread.Mutex = .{},
+//     timer: ?std.time.Timer = null,
+//     last_geometry_event: WindowGeometryEvent = .{ .payload = .{} },
+//     thread: ?std.Thread = null,
+//     should_exit: bool = false,
+//     js_ready: bool = false,
 
-    fn init() !WindowEventTimer {
-        return WindowEventTimer{
-            .timer = try std.time.Timer.start(),
-            .js_ready = false,
-        };
-    }
+//     fn init() !WindowGeometryEventTimer {
+//         return WindowGeometryEventTimer{
+//             .timer = try std.time.Timer.start(),
+//             .js_ready = false,
+//         };
+//     }
 
-    fn deinit(self: *WindowEventTimer) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.should_exit = true;
-        if (self.thread) |thread| {
-            thread.join();
-        }
-    }
+//     fn deinit(self: *WindowGeometryEventTimer) void {
+//         self.mutex.lock();
+//         defer self.mutex.unlock();
+//         self.should_exit = true;
+//         if (self.thread) |thread| {
+//             thread.join();
+//         }
+//     }
 
-    fn startThread(self: *WindowEventTimer) !void {
-        if (self.thread == null) {
-            self.thread = try std.Thread.spawn(
-                .{},
-                processEvents,
-                .{self},
-            );
-        }
-    }
+//     fn startThread(self: *WindowGeometryEventTimer) !void {
+//         if (self.thread == null) {
+//             self.thread = try std.Thread.spawn(
+//                 .{},
+//                 processEvents,
+//                 .{self},
+//             );
+//         }
+//     }
 
-    fn processEvents(self: *WindowEventTimer) void {
-        while (true) {
-            self.mutex.lock();
-            if (self.should_exit) {
-                self.mutex.unlock();
-                break;
-            }
-            const event = self.last_event;
-            const is_ready = self.js_ready;
-            self.mutex.unlock();
+//     fn processEvents(self: *WindowGeometryEventTimer) void {
+//         std.debug.print("Starting window geometry event thread\n", .{});
+//         var last_sent_event: WindowGeometryEvent = .{ .payload = .{} };
 
-            if (!is_ready) {
-                std.time.sleep(50 * std.time.ns_per_ms);
-                continue;
-            }
+//         while (true) {
+//             self.mutex.lock();
+//             if (self.should_exit) {
+//                 self.mutex.unlock();
+//                 break;
+//             }
+//             std.debug.print("Processing events\n", .{});
+//             const event = self.last_event;
+//             const is_ready = self.js_ready;
+//             self.mutex.unlock();
 
-            // Sleep for debounce interval (100ms)
-            std.time.sleep(100 * std.time.ns_per_ms);
+//             // Wait for the JavaScript to be ready
+//             if (!is_ready) {
+//                 std.time.sleep(500 * std.time.ns_per_ms);
+//                 continue;
+//             }
 
-            self.mutex.lock();
-            // Only send event if it matches the last event (no new events during sleep)
-            if (std.meta.eql(event, self.last_event)) {
-                // Create JSON response for the web UI
-                var response_buf: [1024]u8 = undefined;
-                const response_fmt =
-                    \\window.onZigMessage({{"type":"window_moved",
-                    \\"x":{d},
-                    \\"y":{d},
-                    \\"width":{d},
-                    \\"height":{d}
-                    \\}});
-                ;
-                const response = std.fmt.bufPrintZ(
-                    &response_buf,
-                    response_fmt,
-                    .{ event.x, event.y, event.width, event.height },
-                ) catch |err| {
-                    std.debug.print("Failed to format response: {}\n", .{err});
-                    self.mutex.unlock();
-                    continue;
-                };
-                NSEvaluateJavaScript(response);
-            }
-            self.mutex.unlock();
-        }
-    }
-};
+//             // Sleep for debounce interval
+//             std.debug.print("Sleeping for debounce interval\n", .{});
+//             std.time.sleep(debounce_ms);
+//             std.debug.print("Done sleeping for debounce interval\n", .{});
 
-var window_event_timer: WindowEventTimer = undefined;
+//             self.mutex.lock();
+//             // Only send event if it's different from the last sent event
+//             if (!std.meta.eql(event, last_sent_event)) {
+//                 // Create JSON response for the web UI
+//                 var response_buf: [1024]u8 = undefined;
+//                 const response_fmt =
+//                     \\window.nativeCommunication.sendToNative({{
+//                     \\"type":"window_moved",
+//                     \\"data":{{
+//                     \\"x":{d},
+//                     \\"y":{d},
+//                     \\"width":{d},
+//                     \\"height":{d}
+//                     \\}}
+//                     \\}});
+//                 ;
+//                 const response = std.fmt.bufPrintZ(
+//                     &response_buf,
+//                     response_fmt,
+//                     .{
+//                         event.payload.x,
+//                         event.payload.y,
+//                         event.payload.width,
+//                         event.payload.height,
+//                     },
+//                 ) catch |err| {
+//                     std.debug.print("Failed to format response: {}\n", .{err});
+//                     self.mutex.unlock();
+//                     continue;
+//                 };
+//                 std.debug.print("Evaluating JavaScript: {s}\n", .{response});
+//                 NSEvaluateJavaScript(response);
+//                 last_sent_event = event;
+//             }
+//             self.mutex.unlock();
+//         }
+//     }
+// };
 
-pub fn init() !void {
-    window_event_timer = try WindowEventTimer.init();
-    try window_event_timer.startThread();
-}
+// var geom_change_timer: WindowGeometryEventTimer = undefined;
 
-pub fn deinit() void {
-    window_event_timer.deinit();
-}
+// pub fn init() !void {
+//geom_change_timer = try WindowGeometryEventTimer.init();
+//try geom_change_timer.startThread();
+//}
 
-export fn onWindowEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
-    window_event_timer.mutex.lock();
-    defer window_event_timer.mutex.unlock();
+// pub fn deinit() void {
+//geom_change_timer.deinit();
+//}
+
+export fn onWindowGeometryEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
+    _ = x;
+    _ = y;
+    _ = width;
+    _ = height;
+
+    // std.debug.print(
+    //     "turf:onWindowGeometryEvent: ({d}, {d}, {d}, {d})\n",
+    //     .{ x, y, width, height },
+    // );
+
+    // TODO: Send the event to the JavaScript code
+
+    // geom_change_timer.mutex.lock();
+    // defer geom_change_timer.mutex.unlock();
 
     // Update the last event
-    window_event_timer.last_event = .{
-        .x = x,
-        .y = y,
-        .width = width,
-        .height = height,
-    };
+    //geom_change_timer.last_event = .{
+    //    .payload = .{
+    //        .x = x,
+    //        .y = y,
+    //        .width = width,
+    //        .height = height,
+    //    },
+    //};
 }
 
-export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
+var module_allocator: std.mem.Allocator = undefined;
+
+pub fn initModuleAllocator(allocator: std.mem.Allocator) void {
+    module_allocator = allocator;
+}
+// This function is called when a message is received from the JavaScript code.
+// The message is a JSON string that contains the type of message and the data.
+// The data is a JSON string that contains the data of the message.
+// The type of message is one of the following:
+// - "js_ready"
+// - "show_file_dialog"
+// - "native_file_selected"
+export fn onJavaScriptMessage(
+    message_cstr: [*:0]const u8,
+) callconv(.C) void {
     const message = std.mem.span(message_cstr);
-    std.debug.print("Received message from JavaScript: {s}\n", .{message});
+    std.debug.print("ZIG Received message from JavaScript: {s}\n", .{message});
 
     // Parse JSON message
     const parsed = std.json.parseFromSlice(
@@ -300,7 +349,7 @@ export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
             path: ?[]const u8 = null,
             value: ?i32 = null,
         },
-        message_parser_allocator,
+        module_allocator,
         message,
         .{},
     ) catch |err| {
@@ -311,9 +360,10 @@ export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
 
     // Handle different message types
     if (std.mem.eql(u8, parsed.value.type, "js_ready")) {
-        window_event_timer.mutex.lock();
-        window_event_timer.js_ready = true;
-        window_event_timer.mutex.unlock();
+        js_ready = true;
+        //geom_change_timer.mutex.lock();
+        //geom_change_timer.js_ready = true;
+        //geom_change_timer.mutex.unlock();
     } else if (std.mem.eql(u8, parsed.value.type, "show_file_dialog")) {
         NSShowOpenFileDialog();
     } else if (std.mem.eql(u8, parsed.value.type, "native_file_selected")) {
@@ -322,7 +372,7 @@ export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
             var response_buf: [1024]u8 = undefined;
             const response = std.fmt.bufPrintZ(
                 &response_buf,
-                "window.onZigMessage({{\"type\":\"file_loaded\",\"filename\":\"{s}\"}})",
+                "window.nativeCommunication.sendToNative({{\"type\":\"file_loaded\",\"data\":{{\"filename\":\"{s}\"}}}})",
                 .{path},
             ) catch |err| {
                 std.debug.print("Failed to format response: {}\n", .{err});

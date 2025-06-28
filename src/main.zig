@@ -1,9 +1,9 @@
 const std = @import("std");
 const turf = @import("turf.zig");
 
-fn onWindowEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
+export fn onWindowEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
     std.debug.print(
-        "Window event: ({d}, {d}, {d}, {d})\n",
+        "123 Window event: ({d}, {d}, {d}, {d})\n",
         .{ x, y, width, height },
     );
 }
@@ -20,25 +20,37 @@ pub fn main() !void {
         }
     }
 
-    // Initialize message parsers
-    turf.initMessageParsers(allocator);
-    defer turf.deinitMessageParsers();
-
     // Initialize the window
-    var window = try turf.Window.init(
-        allocator,
-        .{
+    const win_config: turf.WindowConfig = .{
+        .geometry = .{
             .x = 100,
             .y = 100,
             .height = 800,
             .width = 600,
-            .title = "turf",
         },
+        .title = "turf",
+    };
+
+    var window = try turf.Window.init(
+        allocator,
+        win_config,
     );
     defer window.deinit();
+    window.evalJavaScript("console.log('Hello from Zig!')");
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+    _ = args.next(); // skip over the program name
 
-    const file: [:0]const u8 = "src/web/index.html";
-    try window.loadFile(file);
+    if (args.next()) |arg| {
+        if (std.mem.startsWith(u8, arg, "http://") or std.mem.startsWith(u8, arg, "https://")) {
+            window.loadURL(arg);
+        } else {
+            try window.loadFile(arg);
+        }
+    } else {
+        const file: [:0]const u8 = "src/web/index.html";
+        try window.loadFile(file);
+    }
     //    window.on(turf.WindowEvent, onWindowEvent);
 
     // Run the application

@@ -133,13 +133,6 @@
             // Don't prevent default to allow WebKit's context menu
         });
 
-        // Notify Zig that JavaScript is ready
-        window.addEventListener('load', function() {
-            window.webkit.messageHandlers.zigCallback.postMessage(
-                JSON.stringify({
-                type: "js_ready"
-            }));
-        });
 
         let count = 0;
         

@@ -4,8 +4,11 @@
 
 // Declare the Zig callback functions
 extern void onWindowEvent(int x, int y, int width, int height);
+extern void onWindowGeometryEvent(int x, int y, int width, int height);
 extern void onJavaScriptMessage(const char* message);
 
+
+// AppDelegate is the main app delegate that handles the app lifecycle
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @end
 
@@ -16,25 +19,40 @@ extern void onJavaScriptMessage(const char* message);
 @end
 
 // Forward declarations
-
+//
+// WebView is the main webview that displays the HTML content
+// openPanel is the open file dialog
+// isShowingFileDialog is a flag to track if the file dialog is showing
+//
 static WKWebView *webView = nil;
 static NSOpenPanel *openPanel = nil;
 static BOOL isShowingFileDialog = NO;
-
-
+//
+// WebViewDelegate is the delegate that handles the webview messages
+//
 @interface WebViewDelegate : NSObject <WKScriptMessageHandler>
 @end
 
 @implementation WebViewDelegate
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message {
-    if ([message.name isEqualToString:@"zigCallback"]) {
-        NSString *messageBody = [NSString stringWithFormat:@"%@", message.body];
-        onJavaScriptMessage([messageBody UTF8String]);
+    NSString *messageBody = [NSString stringWithFormat:@"%@", message.body];
+    NSDictionary *jsonDict = nil;
+    if ([messageBody isKindOfClass:[NSString class]]) {
+        jsonDict = [NSJSONSerialization 
+        JSONObjectWithData:[messageBody dataUsingEncoding:NSUTF8StringEncoding]
+        options:0
+        error:nil];
+    } else {
+        jsonDict = message.body;
     }
+    onJavaScriptMessage([messageBody UTF8String]);
 }
 @end
 
+//
+// WindowDelegate is the delegate that handles the window events
+//
 @interface WindowDelegate : NSObject <NSWindowDelegate>
 @end
 
@@ -45,8 +63,10 @@ static BOOL isShowingFileDialog = NO;
     NSScreen *screen = [NSScreen mainScreen];
     CGFloat screenHeight = screen.frame.size.height;
     CGFloat topLeftY = screenHeight - frame.origin.y - frame.size.height;
-    
-    onWindowEvent((int)frame.origin.x, (int)topLeftY, 
+    // print a log message
+    // NSLog(@"windowDidMove: %d, %d, %d, %d", (int)frame.origin.x, (int)topLeftY, 
+    //       (int)frame.size.width, (int)frame.size.height);
+    onWindowGeometryEvent((int)frame.origin.x, (int)topLeftY, 
                   (int)frame.size.width, (int)frame.size.height);
 }
 
@@ -56,15 +76,24 @@ static BOOL isShowingFileDialog = NO;
     NSScreen *screen = [NSScreen mainScreen];
     CGFloat screenHeight = screen.frame.size.height;
     CGFloat topLeftY = screenHeight - frame.origin.y - frame.size.height;
-    
-    onWindowEvent((int)frame.origin.x, (int)topLeftY,
+    // print a log message
+    // NSLog(@"windowDidResize: %d, %d, %d, %d", (int)frame.origin.x, (int)topLeftY, 
+    //       (int)frame.size.width, (int)frame.size.height);
+    onWindowGeometryEvent((int)frame.origin.x, (int)topLeftY,
                     (int)frame.size.width, (int)frame.size.height);
 }
 @end
 
+//
+// windowDelegate is the delegate that handles the window events
+// webViewDelegate is the delegate that handles the webview messages
+//
 static WindowDelegate *windowDelegate = nil;
 static WebViewDelegate *webViewDelegate = nil;
 
+//
+// setupMainMenu sets up the main menu
+//
 static void setupMainMenu(void) {
     NSMenu *mainMenu = [[NSMenu alloc] init];
     NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
@@ -78,7 +107,7 @@ static void setupMainMenu(void) {
     [appMenuItem setSubmenu:appMenu];
     
     [NSApp setMainMenu:mainMenu];
-    
+
 }
 
 @interface NSApplication (Inspector)
@@ -129,6 +158,7 @@ void NSLoadLocalFile(const char* path) {
     } else {
         NSLog(@"WebView is nil when trying to load file: %s", path);
     }
+
 }
 
 
@@ -139,7 +169,8 @@ void NSLoadString(const char* html_content) {
     }
 }
 
-void NSCreateWindow(int x, int y, int w, int h, const char* title) {
+void NSCreateWindow(int x, int y, int w, int h, 
+                    const char* title, const char* jsInject) {
     NSRect frame = NSMakeRect(x, y, w, h);
     NSWindow* window = [[NSWindow alloc] 
         initWithContentRect:frame
@@ -163,10 +194,29 @@ void NSCreateWindow(int x, int y, int w, int h, const char* title) {
     config.preferences.javaScriptCanOpenWindowsAutomatically = YES;
     [config.preferences setValue:@YES forKey:@"developerExtrasEnabled"];
 
+
+    //
+    // Inject a script that will be executed when the page is loaded.
+    // This script will be used to send messages to the webview.
+    //
+    NSString *scriptSource = [NSString stringWithUTF8String:jsInject];
+    //
+    // The script will be executed when the page is loaded.
+    WKUserScript *script = [[WKUserScript alloc] 
+        initWithSource:scriptSource 
+        injectionTime:WKUserScriptInjectionTimeAtDocumentEnd 
+        forMainFrameOnly:YES];
+
     WKUserContentController *userContentController = 
                                       [[WKUserContentController alloc] init];
+    [userContentController addUserScript:script];
+
+    // 
+    // Allow JavaScript code can send messages to the webview by calling
+    // window.webkit.messageHandlers.__turf__.postMessage(message);
+    //
     [userContentController 
-                   addScriptMessageHandler:webViewDelegate name:@"zigCallback"];
+        addScriptMessageHandler:webViewDelegate name:@"__turf__"];
 
     config.userContentController = userContentController;
     
