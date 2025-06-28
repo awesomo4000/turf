@@ -60,6 +60,7 @@ static BOOL isShowingFileDialog = NO;
 //
 // Custom WebView class to suppress beeps
 @interface TurfWebView : WKWebView
+@property (nonatomic) CGFloat currentZoomLevel;
 @end
 
 @implementation TurfWebView
@@ -68,6 +69,27 @@ static BOOL isShowingFileDialog = NO;
     // First, let the menu system handle standard shortcuts like Cmd+Q
     if ([[NSApp mainMenu] performKeyEquivalent:event]) {
         return YES;
+    }
+    
+    // Handle zoom shortcuts
+    if ([event modifierFlags] & NSEventModifierFlagCommand) {
+        NSString *chars = [event charactersIgnoringModifiers];
+        
+        // Cmd+= (zoom in)
+        if ([chars isEqualToString:@"="] || [chars isEqualToString:@"+"]) {
+            [self handleZoomIn];
+            return YES;
+        }
+        // Cmd+- (zoom out)
+        else if ([chars isEqualToString:@"-"]) {
+            [self handleZoomOut];
+            return YES;
+        }
+        // Cmd+0 (reset zoom)
+        else if ([chars isEqualToString:@"0"]) {
+            [self handleZoomReset];
+            return YES;
+        }
     }
     
     // For other command key combinations, let super handle it but return YES
@@ -99,6 +121,34 @@ static BOOL isShowingFileDialog = NO;
 // Ensure we can always become first responder
 - (BOOL)acceptsFirstResponder {
     return YES;
+}
+
+// Zoom handling methods
+- (void)handleZoomIn {
+    if (self.currentZoomLevel == 0) {
+        self.currentZoomLevel = 1.0;
+    }
+    self.currentZoomLevel *= 1.1; // Increase by 10%
+    [self applyZoom];
+}
+
+- (void)handleZoomOut {
+    if (self.currentZoomLevel == 0) {
+        self.currentZoomLevel = 1.0;
+    }
+    self.currentZoomLevel /= 1.1; // Decrease by 10%
+    [self applyZoom];
+}
+
+- (void)handleZoomReset {
+    self.currentZoomLevel = 1.0;
+    [self applyZoom];
+}
+
+- (void)applyZoom {
+    // Use CSS zoom property for proper reflow
+    NSString *script = [NSString stringWithFormat:@"document.body.style.zoom = '%f'", self.currentZoomLevel];
+    [self evaluateJavaScript:script completionHandler:nil];
 }
 @end
 
@@ -295,6 +345,9 @@ void NSCreateWindow(int x, int y, int w, int h,
     // init the webview with the configuration
     webView = [[TurfWebView alloc] 
                       initWithFrame:parentView.bounds configuration:config];
+    
+    // Initialize zoom level
+    ((TurfWebView *)webView).currentZoomLevel = 1.0;
     
     // Set the UI delegate to handle key events
     webView.UIDelegate = webViewDelegate;
