@@ -1,0 +1,5 @@
+x/
+zig-out/
+.zig-cache/
+.vscode/
+*.tgz

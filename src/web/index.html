@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>turf</title>
+    <style>
+        body {
+            font-family: monospace;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.4;
+            color: #333;
+            background: #fff;
+        }
+        #window-geometry {
+            font-family: monospace;
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            background: #fff;
+            color: #000;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 1000;
+        }
+        .main-content {
+            margin-top: 20px;
+        }
+        button {
+            font-family: monospace;
+            font-size: 14px;
+            padding: 4px 8px;
+            margin: 4px 0;
+            border: 1px solid #666;
+            background-color: #fff;
+            color: #333;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #f0f0f0;
+        }
+        #counter {
+            font-size: 16px;
+            margin: 12px 0;
+        }
+        .message {
+            margin: 16px 0;
+            padding: 8px;
+            border: 1px solid #ccc;
+        }
+        .file-section {
+            margin: 16px 0;
+            padding: 8px;
+            border: 1px solid #ccc;
+        }
+        input[type="text"] {
+            font-family: monospace;
+            font-size: 14px;
+            padding: 4px;
+            border: 1px solid #ccc;
+            width: 300px;
+        }
+        h1 {
+            font-size: 18px;
+            margin: 0 0 12px 0;
+        }
+        h2 {
+            font-size: 16px;
+            margin: 0 0 8px 0;
+        }
+        p {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="window-geometry">800x600+100+100</div>
+    <div class="main-content">
+        <h1>turf</h1>
+        
+        <div class="file-section">
+            <h2>Files</h2>
+            <button onclick="showNativeFileDialog()">load file</button>
+            <p id="selectedFile" style="color: #666;">no file selected</p>
+        </div>
+
+        <div class="message">
+            <h2>Counter</h2>
+            <div id="counter">count: 0</div>
+            <button onclick="incrementCounter()">+</button>
+            <button onclick="resetCounter()">reset</button>
+        </div>
+
+        <div class="message">
+            <h2>Messages</h2>
+            <input type="text" id="messageInput" value="Hello from JavaScript!">
+            <button onclick="sendMessageToZig()">send</button>
+        </div>
+
+    </div>
+
+    <script>
+        // Define global message handler first
+        window.onZigMessage = function(message) {
+            console.log('Received message from Zig:', message);
+            
+            switch (message.type) {
+                case 'window_moved':
+                case 'window_resized':
+                    document.getElementById('window-geometry').textContent = 
+                        `${message.width}x${message.height}+${message.x}+${message.y}`;
+                    break;
+                    
+                case 'counter_echo':
+                    console.log('Zig acknowledged counter update:', message.value);
+                    break;
+                    
+                case 'file_loaded':
+                    const selectedFileElement = document.getElementById('selectedFile');
+                    selectedFileElement.textContent = `Selected file: ${message.filename}`;
+                    selectedFileElement.style.color = '#0066cc';
+                    break;
+                    
+                default:
+                    console.log('Unknown message type:', message.type);
+            }
+        };
+
+        // Add global right-click handler
+        document.addEventListener('contextmenu', function(e) {
+            console.log('Right click detected at:', e.clientX, e.clientY);
+            // Don't prevent default to allow WebKit's context menu
+        });
+
+        // Notify Zig that JavaScript is ready
+        window.addEventListener('load', function() {
+            window.webkit.messageHandlers.zigCallback.postMessage(
+                JSON.stringify({
+                type: "js_ready"
+            }));
+        });
+
+        let count = 0;
+        
+        function incrementCounter() {
+            count++;
+            updateDisplay();
+            // Also notify Zig about the counter change
+            window.webkit.messageHandlers.zigCallback.postMessage(
+                JSON.stringify({
+                type: "counter_update",
+                value: count
+            }));
+        }
+        
+        function resetCounter() {
+            count = 0;
+            updateDisplay();
+            // Notify Zig about the counter reset
+            window.webkit.messageHandlers.zigCallback.postMessage(
+                JSON.stringify({
+                type: "counter_reset"
+            }));
+        }
+        
+        function updateDisplay() {
+            document.getElementById('counter').textContent = 
+                `Count: ${count}`;
+        }
+
+        function sendMessageToZig() {
+            const message = document.getElementById('messageInput').value;
+            window.webkit.messageHandlers.zigCallback.postMessage(
+                JSON.stringify({
+                type: "custom_message",
+                message: message
+            }));
+        }
+
+        function showNativeFileDialog() {
+            console.log('Showing file dialog...');
+            // Disable the button temporarily
+            const button = document.querySelector('.file-section button');
+            if (button.disabled) {
+                console.log('Dialog already showing...');
+                return;
+            }
+            button.disabled = true;
+            
+            window.webkit.messageHandlers.zigCallback.postMessage(
+                JSON.stringify({
+                type: "show_file_dialog"
+            }));
+
+            // Re-enable the button after a short delay
+            setTimeout(() => {
+                button.disabled = false;
+            }, 1000);
+        }
+
+    </script>
+</body>
+</html>
