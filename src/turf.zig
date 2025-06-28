@@ -75,6 +75,10 @@ pub const Window = struct {
             return error.CocoaInitFailed;
         }
 
+        // Initialize the window event timer
+        window_event_timer = try WindowEventTimer.init();
+        try window_event_timer.startThread();
+
         return Window{
             .allocator = allocator,
             .config = config,
@@ -85,7 +89,8 @@ pub const Window = struct {
     // Clean up window resources
     pub fn deinit(self: *Window) void {
         _ = self;
-        // Any cleanup needed goes here
+        // Clean up the window event timer
+        window_event_timer.deinit();
     }
 
     // Create the native window
@@ -171,25 +176,104 @@ pub const Window = struct {
     }
 };
 
-// Callback functions for the Cocoa bridge
+// Thread-safe timer for debouncing window events
+const WindowEventTimer = struct {
+    mutex: std.Thread.Mutex = .{},
+    timer: ?std.time.Timer = null,
+    last_event: struct {
+        x: c_int = 0,
+        y: c_int = 0,
+        width: c_int = 0,
+        height: c_int = 0,
+    } = .{},
+    thread: ?std.Thread = null,
+    should_exit: bool = false,
+    js_ready: bool = false,
+
+    fn init() !WindowEventTimer {
+        return WindowEventTimer{
+            .timer = try std.time.Timer.start(),
+            .js_ready = false,
+        };
+    }
+
+    fn deinit(self: *WindowEventTimer) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.should_exit = true;
+        if (self.thread) |thread| {
+            thread.join();
+        }
+    }
+
+    fn startThread(self: *WindowEventTimer) !void {
+        if (self.thread == null) {
+            self.thread = try std.Thread.spawn(.{}, processEvents, .{self});
+        }
+    }
+
+    fn processEvents(self: *WindowEventTimer) void {
+        while (true) {
+            self.mutex.lock();
+            if (self.should_exit) {
+                self.mutex.unlock();
+                break;
+            }
+            const event = self.last_event;
+            const is_ready = self.js_ready;
+            self.mutex.unlock();
+
+            if (!is_ready) {
+                std.time.sleep(50 * std.time.ns_per_ms);
+                continue;
+            }
+
+            // Sleep for debounce interval (100ms)
+            std.time.sleep(100 * std.time.ns_per_ms);
+
+            self.mutex.lock();
+            // Only send event if it matches the last event (no new events during sleep)
+            if (std.meta.eql(event, self.last_event)) {
+                // Create JSON response for the web UI
+                var response_buf: [1024]u8 = undefined;
+                const response = std.fmt.bufPrintZ(
+                    &response_buf,
+                    "window.onZigMessage({{\"type\":\"window_moved\",\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d}}})",
+                    .{ event.x, event.y, event.width, event.height },
+                ) catch |err| {
+                    std.debug.print("Failed to format response: {}\n", .{err});
+                    self.mutex.unlock();
+                    continue;
+                };
+                NSEvaluateJavaScript(response);
+            }
+            self.mutex.unlock();
+        }
+    }
+};
+
+var window_event_timer: WindowEventTimer = undefined;
+
+pub fn init() !void {
+    window_event_timer = try WindowEventTimer.init();
+    try window_event_timer.startThread();
+}
+
+pub fn deinit() void {
+    window_event_timer.deinit();
+}
 
 export fn onWindowEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
-    std.debug.print(
-        "Window event: ({d}, {d}, {d}, {d})\n",
-        .{ x, y, width, height },
-    );
+    window_event_timer.mutex.lock();
+    defer window_event_timer.mutex.unlock();
 
-    // Create JSON response for the web UI
-    var response_buf: [1024]u8 = undefined;
-    const response = std.fmt.bufPrintZ(
-        &response_buf,
-        "window.onZigMessage({{\"type\":\"window_moved\",\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d}}})",
-        .{ x, y, width, height },
-    ) catch |err| {
-        std.debug.print("Failed to format response: {}\n", .{err});
-        return;
+    // Update the last event
+    window_event_timer.last_event = .{
+        .x = x,
+        .y = y,
+        .width = width,
+        .height = height,
     };
-    NSEvaluateJavaScript(response);
 }
 
 export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
@@ -213,7 +297,11 @@ export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
     defer parsed.deinit();
 
     // Handle different message types
-    if (std.mem.eql(u8, parsed.value.type, "show_file_dialog")) {
+    if (std.mem.eql(u8, parsed.value.type, "js_ready")) {
+        window_event_timer.mutex.lock();
+        window_event_timer.js_ready = true;
+        window_event_timer.mutex.unlock();
+    } else if (std.mem.eql(u8, parsed.value.type, "show_file_dialog")) {
         NSShowOpenFileDialog();
     } else if (std.mem.eql(u8, parsed.value.type, "native_file_selected")) {
         if (parsed.value.path) |path| {
