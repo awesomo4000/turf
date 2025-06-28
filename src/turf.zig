@@ -178,6 +178,18 @@ export fn onWindowEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
         "Window event: ({d}, {d}, {d}, {d})\n",
         .{ x, y, width, height },
     );
+
+    // Create JSON response for the web UI
+    var response_buf: [1024]u8 = undefined;
+    const response = std.fmt.bufPrintZ(
+        &response_buf,
+        "window.onZigMessage({{\"type\":\"window_moved\",\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d}}})",
+        .{ x, y, width, height },
+    ) catch |err| {
+        std.debug.print("Failed to format response: {}\n", .{err});
+        return;
+    };
+    NSEvaluateJavaScript(response);
 }
 
 export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
