@@ -208,7 +208,11 @@ const WindowEventTimer = struct {
 
     fn startThread(self: *WindowEventTimer) !void {
         if (self.thread == null) {
-            self.thread = try std.Thread.spawn(.{}, processEvents, .{self});
+            self.thread = try std.Thread.spawn(
+                .{},
+                processEvents,
+                .{self},
+            );
         }
     }
 
@@ -236,9 +240,17 @@ const WindowEventTimer = struct {
             if (std.meta.eql(event, self.last_event)) {
                 // Create JSON response for the web UI
                 var response_buf: [1024]u8 = undefined;
+                const response_fmt =
+                    \\window.onZigMessage({{"type":"window_moved",
+                    \\"x":{d},
+                    \\"y":{d},
+                    \\"width":{d},
+                    \\"height":{d}
+                    \\}});
+                ;
                 const response = std.fmt.bufPrintZ(
                     &response_buf,
-                    "window.onZigMessage({{\"type\":\"window_moved\",\"x\":{d},\"y\":{d},\"width\":{d},\"height\":{d}}})",
+                    response_fmt,
                     .{ event.x, event.y, event.width, event.height },
                 ) catch |err| {
                     std.debug.print("Failed to format response: {}\n", .{err});
@@ -286,6 +298,7 @@ export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
             type: []const u8,
             message: ?[]const u8 = null,
             path: ?[]const u8 = null,
+            value: ?i32 = null,
         },
         message_parser_allocator,
         message,

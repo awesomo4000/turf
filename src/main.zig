@@ -37,8 +37,6 @@ pub fn main() !void {
     );
     defer window.deinit();
 
-    // Let's modify the order of operations in the Window run method
-    // so we create the window first, then load content, then run the app loop
     const file: [:0]const u8 = "src/web/index.html";
     try window.loadFile(file);
     //    window.on(turf.WindowEvent, onWindowEvent);
