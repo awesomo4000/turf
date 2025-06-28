@@ -30,7 +30,7 @@ static BOOL isShowingFileDialog = NO;
 //
 // WebViewDelegate is the delegate that handles the webview messages
 //
-@interface WebViewDelegate : NSObject <WKScriptMessageHandler>
+@interface WebViewDelegate : NSObject <WKScriptMessageHandler, WKUIDelegate>
 @end
 
 @implementation WebViewDelegate
@@ -48,22 +48,87 @@ static BOOL isShowingFileDialog = NO;
     }
     onJavaScriptMessage([messageBody UTF8String]);
 }
+
+// Suppress beeps for unhandled key events
+- (void)webView:(WKWebView *)webView runJavaScriptAlertPanelWithMessage:(NSString *)message initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(void))completionHandler {
+    completionHandler();
+}
 @end
 
 //
 // WindowDelegate is the delegate that handles the window events
 //
+// Custom WebView class to suppress beeps
+@interface TurfWebView : WKWebView
+@end
+
+@implementation TurfWebView
+// Override performKeyEquivalent to prevent beeps while allowing events through
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    // First, let the menu system handle standard shortcuts like Cmd+Q
+    if ([[NSApp mainMenu] performKeyEquivalent:event]) {
+        return YES;
+    }
+    
+    // For other command key combinations, let super handle it but return YES
+    // to prevent beeping even if not handled
+    [super performKeyEquivalent:event];
+    
+    // Always return YES for command keys to prevent beep
+    if ([event modifierFlags] & NSEventModifierFlagCommand) {
+        return YES;
+    }
+    
+    return NO;
+}
+
+// Override noResponderFor to prevent beeps
+- (void)noResponderFor:(SEL)eventSelector {
+    // Do nothing - prevents the beep
+    // Default implementation calls NSBeep()
+}
+
+// Override keyDown to handle keys properly
+- (void)keyDown:(NSEvent *)event {
+    // Always call super to let the WebView handle the event
+    [super keyDown:event];
+    
+    // The noResponderFor: override will prevent any beeping
+}
+
+// Ensure we can always become first responder
+- (BOOL)acceptsFirstResponder {
+    return YES;
+}
+@end
+
+// Custom window class to suppress beeps
+@interface TurfWindow : NSWindow
+@end
+
+@implementation TurfWindow
+// Override performKeyEquivalent to prevent beeps for unhandled shortcuts
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    // Let the WebView handle all key events first
+    if ([self.contentView isKindOfClass:[WKWebView class]]) {
+        // Return YES to indicate we've handled it (even if we haven't)
+        // This prevents the system beep
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
+@end
+
 @interface WindowDelegate : NSObject <NSWindowDelegate>
 @end
 
 @implementation WindowDelegate
 - (void)windowDidMove:(NSNotification *)notification {
-    NSWindow *window = notification.object;
+    NSWindow *window = [notification object];
     NSRect frame = [window frame];
     NSScreen *screen = [NSScreen mainScreen];
     CGFloat screenHeight = screen.frame.size.height;
     CGFloat topLeftY = screenHeight - frame.origin.y - frame.size.height;
-    // print a log message
     // NSLog(@"windowDidMove: %d, %d, %d, %d", (int)frame.origin.x, (int)topLeftY, 
     //       (int)frame.size.width, (int)frame.size.height);
     onWindowGeometryEvent((int)frame.origin.x, (int)topLeftY, 
@@ -71,16 +136,23 @@ static BOOL isShowingFileDialog = NO;
 }
 
 - (void)windowDidResize:(NSNotification *)notification {
-    NSWindow *window = notification.object;
+    NSWindow *window = [notification object];
     NSRect frame = [window frame];
     NSScreen *screen = [NSScreen mainScreen];
     CGFloat screenHeight = screen.frame.size.height;
     CGFloat topLeftY = screenHeight - frame.origin.y - frame.size.height;
-    // print a log message
     // NSLog(@"windowDidResize: %d, %d, %d, %d", (int)frame.origin.x, (int)topLeftY, 
     //       (int)frame.size.width, (int)frame.size.height);
     onWindowGeometryEvent((int)frame.origin.x, (int)topLeftY,
                     (int)frame.size.width, (int)frame.size.height);
+}
+
+// Ensure WebView keeps focus
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    NSWindow *window = [notification object];
+    if (webView && [webView window] == window) {
+        [window makeFirstResponder:webView];
+    }
 }
 @end
 
@@ -172,7 +244,7 @@ void NSLoadString(const char* html_content) {
 void NSCreateWindow(int x, int y, int w, int h, 
                     const char* title, const char* jsInject) {
     NSRect frame = NSMakeRect(x, y, w, h);
-    NSWindow* window = [[NSWindow alloc] 
+    TurfWindow* window = [[TurfWindow alloc] 
         initWithContentRect:frame
         styleMask:NSWindowStyleMaskTitled|
                   NSWindowStyleMaskClosable|
@@ -221,8 +293,11 @@ void NSCreateWindow(int x, int y, int w, int h,
     config.userContentController = userContentController;
     
     // init the webview with the configuration
-    webView = [[WKWebView alloc] 
+    webView = [[TurfWebView alloc] 
                       initWithFrame:parentView.bounds configuration:config];
+    
+    // Set the UI delegate to handle key events
+    webView.UIDelegate = webViewDelegate;
     
     // Enable zoom
     [webView setAllowsMagnification:YES];
@@ -244,6 +319,9 @@ void NSCreateWindow(int x, int y, int w, int h,
     // [webView fixDisplayLayerAndEnableInspector];
 
     [parentView addSubview:webView];
+    
+    // Make sure the WebView has focus
+    [window makeFirstResponder:webView];
 
     // Load a default URL
     NSURL *url = [NSURL URLWithString:@"about:blank"];
