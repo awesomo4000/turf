@@ -176,7 +176,38 @@ export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
     const message = std.mem.span(message_cstr);
     std.debug.print("Received message from JavaScript: {s}\n", .{message});
 
-    // In a real implementation, you would parse the message to get the type
-    // and dispatch to the appropriate parser
-    // For now, we'll just log it
+    // Parse JSON message
+    const parsed = std.json.parseFromSlice(
+        struct {
+            type: []const u8,
+            message: ?[]const u8 = null,
+            path: ?[]const u8 = null,
+        },
+        message_parser_allocator,
+        message,
+        .{},
+    ) catch |err| {
+        std.debug.print("Failed to parse message: {}\n", .{err});
+        return;
+    };
+    defer parsed.deinit();
+
+    // Handle different message types
+    if (std.mem.eql(u8, parsed.value.type, "show_file_dialog")) {
+        NSShowOpenFileDialog();
+    } else if (std.mem.eql(u8, parsed.value.type, "native_file_selected")) {
+        if (parsed.value.path) |path| {
+            // Create JSON response for the web UI
+            var response_buf: [1024]u8 = undefined;
+            const response = std.fmt.bufPrintZ(
+                &response_buf,
+                "window.onZigMessage({{\"type\":\"file_loaded\",\"filename\":\"{s}\"}})",
+                .{path},
+            ) catch |err| {
+                std.debug.print("Failed to format response: {}\n", .{err});
+                return;
+            };
+            NSEvaluateJavaScript(response);
+        }
+    }
 }
