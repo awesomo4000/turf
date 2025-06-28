@@ -174,6 +174,15 @@ void NSCreateWindow(int x, int y, int w, int h, const char* title) {
     webView = [[WKWebView alloc] 
                       initWithFrame:parentView.bounds configuration:config];
     
+    // Enable zoom
+    [webView setAllowsMagnification:YES];
+    [webView setMagnification:1.0];
+    
+    // Enable mouse wheel zooming with Command key
+    NSScrollView *scrollView = [webView enclosingScrollView];
+    [scrollView setAllowsMagnification:YES];
+    [scrollView setMagnification:1.0];
+    
     // Enable layer backing for the WebView
     [webView setWantsLayer:YES];
     webView.layer.contentsScale = window.backingScaleFactor;
