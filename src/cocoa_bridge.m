@@ -3,8 +3,7 @@
 #import <dispatch/dispatch.h>
 
 // Declare the Zig callback functions
-extern void onWindowMoved(int x, int y, int width, int height);
-extern void onWindowResized(int x, int y, int width, int height);
+extern void onWindowEvent(int x, int y, int width, int height);
 extern void onJavaScriptMessage(const char* message);
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
@@ -47,7 +46,7 @@ static BOOL isShowingFileDialog = NO;
     CGFloat screenHeight = screen.frame.size.height;
     CGFloat topLeftY = screenHeight - frame.origin.y - frame.size.height;
     
-    onWindowMoved((int)frame.origin.x, (int)topLeftY, 
+    onWindowEvent((int)frame.origin.x, (int)topLeftY, 
                   (int)frame.size.width, (int)frame.size.height);
 }
 
@@ -58,7 +57,7 @@ static BOOL isShowingFileDialog = NO;
     CGFloat screenHeight = screen.frame.size.height;
     CGFloat topLeftY = screenHeight - frame.origin.y - frame.size.height;
     
-    onWindowResized((int)frame.origin.x, (int)topLeftY,
+    onWindowEvent((int)frame.origin.x, (int)topLeftY,
                     (int)frame.size.width, (int)frame.size.height);
 }
 @end

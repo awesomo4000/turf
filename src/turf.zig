@@ -12,7 +12,10 @@ extern fn NSEvaluateJavaScript(script: [*:0]const u8) void;
 extern fn NSShowOpenFileDialog() void;
 
 // Helper function to get absolute path
-fn getAbsolutePath(allocator: std.mem.Allocator, path: [:0]const u8) ![:0]const u8 {
+fn getAbsolutePath(
+    allocator: std.mem.Allocator,
+    path: [:0]const u8,
+) ![:0]const u8 {
     // Check if path is already absolute (starts with '/')
     if (path.len > 0 and path[0] == '/') {
         return allocator.dupeZ(u8, path);
@@ -116,10 +119,16 @@ pub const Window = struct {
         }
 
         // Convert to absolute path if needed
-        const abs_path = try getAbsolutePath(self.allocator, path);
+        const abs_path = try getAbsolutePath(
+            self.allocator,
+            path,
+        );
         defer self.allocator.free(abs_path);
 
-        std.debug.print("Loading file from path: {s}\n", .{abs_path});
+        std.debug.print(
+            "Loading file from path: {s}\n",
+            .{abs_path},
+        );
         NSLoadLocalFile(abs_path);
     }
 
@@ -164,12 +173,11 @@ pub const Window = struct {
 
 // Callback functions for the Cocoa bridge
 
-export fn onWindowMoved(x: c_int, y: c_int, width: c_int, height: c_int) void {
-    std.debug.print("Window moved to: ({d}, {d}) with size: {d}x{d}\n", .{ x, y, width, height });
-}
-
-export fn onWindowResized(x: c_int, y: c_int, width: c_int, height: c_int) void {
-    std.debug.print("Window resized to: ({d}, {d}) with size: {d}x{d}\n", .{ x, y, width, height });
+export fn onWindowEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
+    std.debug.print(
+        "Window event: ({d}, {d}, {d}, {d})\n",
+        .{ x, y, width, height },
+    );
 }
 
 export fn onJavaScriptMessage(message_cstr: [*:0]const u8) void {
