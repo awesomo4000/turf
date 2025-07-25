@@ -27,10 +27,17 @@ extern void onJavaScriptMessage(const char* message);
 static WKWebView *webView = nil;
 static NSOpenPanel *openPanel = nil;
 static BOOL isShowingFileDialog = NO;
+
+// Custom WebView class to suppress beeps
+@interface TurfWebView : WKWebView
+@property (nonatomic) CGFloat currentZoomLevel;
+- (void)applyZoom;
+@end
+
 //
 // WebViewDelegate is the delegate that handles the webview messages
 //
-@interface WebViewDelegate : NSObject <WKScriptMessageHandler, WKUIDelegate>
+@interface WebViewDelegate : NSObject <WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate>
 @end
 
 @implementation WebViewDelegate
@@ -53,15 +60,25 @@ static BOOL isShowingFileDialog = NO;
 - (void)webView:(WKWebView *)webView runJavaScriptAlertPanelWithMessage:(NSString *)message initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(void))completionHandler {
     completionHandler();
 }
+
+// Navigation delegate methods to persist zoom across reloads
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    // Reapply zoom level after page load
+    if ([webView isKindOfClass:[TurfWebView class]]) {
+        TurfWebView *turfWebView = (TurfWebView *)webView;
+        if (turfWebView.currentZoomLevel != 0 && turfWebView.currentZoomLevel != 1.0) {
+            // Small delay to ensure DOM is ready
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [turfWebView applyZoom];
+            });
+        }
+    }
+}
 @end
 
 //
 // WindowDelegate is the delegate that handles the window events
 //
-// Custom WebView class to suppress beeps
-@interface TurfWebView : WKWebView
-@property (nonatomic) CGFloat currentZoomLevel;
-@end
 
 @implementation TurfWebView
 // Override performKeyEquivalent to prevent beeps while allowing events through
@@ -351,6 +368,9 @@ void NSCreateWindow(int x, int y, int w, int h,
     
     // Set the UI delegate to handle key events
     webView.UIDelegate = webViewDelegate;
+    
+    // Set the navigation delegate to handle page loads
+    webView.navigationDelegate = webViewDelegate;
     
     // Enable zoom
     [webView setAllowsMagnification:YES];
