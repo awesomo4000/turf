@@ -1,89 +1,87 @@
 // This script is injected into the webview when the window is created.
-// It is injected after the local file is loaded.
-// It is used to send and receive messages from the native application.
+// It provides the turf API for communication between JavaScript and native code.
 
-// Listen for messages from the native application.
-window.addEventListener('__turf__', function(event) {
-        const message = event.data.message;
-        // bubble up  the message to a registered handler from the 
-        // user's code if the user has registered one.
-        if (message.type === 'window_geometry') {
-            if (registry['window_geometry']) {
-                registry['window_geometry'](message.data);
+(function() {
+    // Registry dictionary to store the handlers for messages
+    const registry = {};
+
+    // Send a message to the native application
+    function send(message) {
+        if (window.webkit &&
+            window.webkit.messageHandlers &&
+            window.webkit.messageHandlers.__turf__) {
+            // Create a properly formatted message
+            const formattedMessage = {
+                type: message.type
+            };
+            
+            // Add data fields directly to the message object
+            if (message.data) {
+                // If data is an object, spread its properties into the message
+                if (typeof message.data === 'object' && message.data !== null) {
+                    Object.assign(formattedMessage, message.data);
+                } else {
+                    // Otherwise add it as a message field
+                    formattedMessage.message = message.data;
+                }
             }
-            // You can add UI updates here if needed
-        } else if (message.type === 'file_selected') {
-            if (registry['file_selected']) {
-                registry['file_selected'](message.data);
-            }
+            
+            const jsonMessage = JSON.stringify(formattedMessage);
+            window.webkit.messageHandlers.__turf__.postMessage(jsonMessage);
+            console.log('Sent message to native app:', jsonMessage);
         } else {
-            if (registry['native_message']) {
-                registry['native_message'](message.data);
-            }
+            console.error('Native communication not available');
         }
-});
-
-// registry dictionary to store the handlers for the messages
-const registry = {};
-
-
-// User can register handlers for events from the native app
-
-function onWindowGeometryChanged(handler_function) {
-    registry['window_geometry'] = handler_function;
-}
-
-function onFileSelected(handler_function) {
-    registry['file_select'] = handler_function;
-}
-
-function onMessage(message_type, handler_function) {
-    registry[message_type] = handler_function;
-}
-
-function nativeFileSelect() {
-    send({
-        type: 'show_file_dialog',
-        data: null,
-    });
-}
-
-// Send a message to the native application.
-function send(message) {
-    if (window.webkit &&
-        window.webkit.messageHandlers &&
-        window.webkit.messageHandlers.__turf__) {
-        let msg_data = '';
-        if (typeof message.data === 'string') {
-            msg_data = message.data;
-        } else {
-            msg_data = JSON.stringify(message.data);
-        }
-        // Format message to match Zig's expected structure
-        const formattedMessage = JSON.stringify({
-            type: message.type,
-            message: msg_data,
-        });
-        window.webkit.messageHandlers.__turf__.postMessage(formattedMessage);
-        console.log('Sent message to native app:', formattedMessage);
-    } else {
-        console.error('Native communication not available');
     }
-}
 
+    // User can register handlers for events from the native app
+    function onWindowGeometryChanged(handler_function) {
+        registry['window_geometry'] = handler_function;
+    }
 
-// Export functions for use in other files
-window.turf = {
-    send,
-    onWindowGeometryChanged,
-    onFileSelected,
-    onMessage,
-    nativeFileSelect,
-};
+    function onFileSelected(handler_function) {
+        registry['file_selected'] = handler_function;
+    }
 
-// Add the CSS keyframes for the shimmer effect
-const style = document.createElement('style');
-style.textContent = `
+    function onMessage(message_type, handler_function) {
+        registry[message_type] = handler_function;
+    }
+
+    function nativeFileSelect() {
+        send({
+            type: 'show_file_dialog',
+            data: null,
+        });
+    }
+
+    // Internal function to handle messages from native
+    function handleNativeMessage(msg) {
+        console.log('Native message received:', msg);
+        
+        // Call registered handlers based on message type
+        if (msg.type && registry[msg.type]) {
+            registry[msg.type](msg.data);
+        } else if (registry['native_message']) {
+            // Fallback to generic handler
+            registry['native_message'](msg);
+        }
+    }
+
+    // Export functions for use in other files
+    window.turf = {
+        send: send,
+        onWindowGeometryChanged: onWindowGeometryChanged,
+        onFileSelected: onFileSelected,
+        onMessage: onMessage,
+        nativeFileSelect: nativeFileSelect,
+        _handleNativeMessage: handleNativeMessage
+    };
+
+    // Add the CSS and signature after DOM is ready
+    function addTurfSignature() {
+        // Add the CSS keyframes for the shimmer effect
+        const style = document.createElement('style');
+        style.textContent = `
 #turf-signature {
   position: fixed;
   bottom: 8px;
@@ -124,19 +122,50 @@ style.textContent = `
     background-clip: text;
   }
 }`;
-document.head.appendChild(style);
+        document.head.appendChild(style);
 
-document.body.insertAdjacentHTML('beforeend',
-  '<div id="turf-signature" class="animate">𝓽𝓾𝓻𝓯</div>');
+        document.body.insertAdjacentHTML('beforeend',
+          '<div id="turf-signature" class="animate">𝓽𝓾𝓻𝓯</div>');
 
-const signatureElement = document.getElementById('turf-signature');
-if (signatureElement) {
-  signatureElement.addEventListener('animationend', () => {
-    signatureElement.classList.remove('animate');
-  }, { once: true });
-}
+        const signatureElement = document.getElementById('turf-signature');
+        if (signatureElement) {
+          signatureElement.addEventListener('animationend', () => {
+            signatureElement.classList.remove('animate');
+          }, { once: true });
+        }
 
-window.turf.send({
-    type: 'turf_ready',
-    data: 'At your service!'
-});
+        window.turf.send({
+            type: 'turf_ready',
+            data: 'At your service!'
+        });
+    }
+
+    // Wait for DOM to be ready before adding signature
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', addTurfSignature);
+    } else {
+        // DOM is already ready
+        addTurfSignature();
+    }
+
+    // Listen for messages from the native application (legacy event-based approach)
+    window.addEventListener('__turf__', function(event) {
+        const message = event.data.message;
+        // bubble up the message to a registered handler from the 
+        // user's code if the user has registered one.
+        if (message.type === 'window_geometry') {
+            if (registry['window_geometry']) {
+                registry['window_geometry'](message.data);
+            }
+        } else if (message.type === 'file_selected') {
+            if (registry['file_selected']) {
+                registry['file_selected'](message.data);
+            }
+        } else {
+            if (registry['native_message']) {
+                registry['native_message'](message.data);
+            }
+        }
+    });
+
+})();

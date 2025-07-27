@@ -1,4 +1,5 @@
 const std = @import("std");
+
 // Helper function to get absolute path
 pub fn getAbsolutePath(
     allocator: std.mem.Allocator,
@@ -14,6 +15,9 @@ pub fn getAbsolutePath(
     defer allocator.free(cwd);
 
     // Create absolute path by joining cwd and path
-    const abs_path = try std.fs.path.join(allocator, &[_][]const u8{ cwd, path });
+    const abs_path = try std.fs.path.join(
+        allocator,
+        &[_][]const u8{ cwd, path },
+    );
     return allocator.dupeZ(u8, abs_path);
 }

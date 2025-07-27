@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Turf is a cross-platform application framework written in Zig that creates native windows with embedded WebKit webviews. It bridges Objective-C/Cocoa on macOS with a JavaScript runtime, allowing for native desktop applications with web-based UIs.
+Turf is a cross-platform application framework written in Zig that creates native windows with embedded WebKit webviews. It bridges Objective-C/Cocoa on macOS with a JavaScript runtime, and WebKIT6.0/GTK4/JavaScriptCore allowing for native desktop applications with web-based UIs. 
 
 ## Build Commands
 
@@ -21,10 +21,11 @@ Turf is a cross-platform application framework written in Zig that creates nativ
    - Window creation, configuration, and lifecycle
    - JavaScript injection and evaluation
    - Message passing between native and web layers
-   - File dialog integration
+   - File Dialog Integration (in progress)
 
-2. **Platform Bridge** (`src/cocoa_bridge.m`): Objective-C bridge for macOS
-   - WebKit integration
+2. **Platform Bridges**
+   - MacOS:  (`src/cocoa_bridge.m`): Objective-C bridge for macOS
+   - Linux:  Lates GTK4 WebKit6.0 integration
    - Native window management
    - Event handling and message passing
 
@@ -45,7 +46,10 @@ Turf is a cross-platform application framework written in Zig that creates nativ
 
 ## Development Guidelines
 
-- **Zig Version**: Requires 0.14.0+
-- **Platform**: Currently macOS-only (Cocoa/WebKit frameworks required)
+- **Zig Version**: Requires 0.14.1
+- **Platform**: Currently:
+      - MacOS (Cocoa/WebKit frameworks required)
+      - Linux (GTK4, WebKit6.0)
 - **Error Handling**: Use error unions (`!`) and handle with `try`/`catch`
 - **Testing**: Unit tests can be added inline with `test "description" { ... }`
+
