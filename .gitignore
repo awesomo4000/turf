@@ -3,3 +3,11 @@ zig-out/
 .zig-cache/
 .vscode/
 *.tgz
+*.exe
+*.obj
+*.pdb
+test*.bat
+test*.ps1
+run*.ps1
+*_original.zig
+src/test-*.zig
