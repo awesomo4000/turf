@@ -16,6 +16,7 @@ pub const PlatformWindow = struct {
     user_content_manager: ?*c.WebKitUserContentManager = null,
     message_queue: *common.MessageQueue,
     main_loop: ?*c.GMainLoop = null,
+    prng: std.Random.DefaultPrng,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -386,8 +387,7 @@ fn onScriptMessage(
             }
 
             // Generate random number
-            var prng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
-            const random_value = prng.random().intRangeAtMost(i64, min, max);
+            const random_value = window.prng.random().intRangeAtMost(i64, min, max);
 
             const random_str = std.fmt.allocPrint(window.allocator, "{{\"value\":{}}}", .{random_value}) catch return;
             const random_str_z = window.allocator.dupeZ(u8, random_str) catch {
