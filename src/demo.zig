@@ -21,8 +21,8 @@ pub fn main() !void {
 
     window.createWindow();
 
-    // Start message pump at 60Hz for responsive communication
-    window.startMessagePump(16);
+    // Start message pump at a fast frequency for responsiveness
+    window.startMessagePump(1);
 
     // Start a thread to send periodic updates from native to JS
     const thread = try std.Thread.spawn(.{}, nativeMessageThread, .{&window});
@@ -139,7 +139,7 @@ pub fn main() !void {
         \\            <button onclick="sendRandom()">Request Random Number</button>
         \\            <div style="margin-top: 15px;">
         \\                <strong>Last Random Number:</strong> 
-        \\                <span id="randomNumber" style="font-size: 20px; color: #007bff; font-weight: bold;">-</span>
+        \\                <span id="randomNumber" style="font-size: 20px; color: #007bff; font-weight: bold; display: inline-block; min-width: 60px; text-align: center;">-</span>
         \\            </div>
         \\            <div style="margin-top: 15px;">
         \\                <input type="text" id="customMessage" placeholder="Enter custom message">
@@ -186,18 +186,42 @@ pub fn main() !void {
         \\            document.getElementById('receivedCount').textContent = receivedCount;
         \\        }
         \\        
+        \\        let logBuffer = [];
+        \\        let logTimer = null;
+        \\        
         \\        function addToLog(message, fromNative = false) {
-        \\            const log = document.getElementById('messageLog');
-        \\            const item = document.createElement('div');
-        \\            item.className = 'message-item ' + (fromNative ? 'message-from-native' : 'message-from-js');
         \\            const timestamp = new Date().toLocaleTimeString();
-        \\            item.textContent = `[${timestamp}] ${fromNative ? '← Native' : '→ JS'}: ${message}`;
-        \\            log.insertBefore(item, log.firstChild);
+        \\            logBuffer.push({
+        \\                message: `[${timestamp}] ${fromNative ? '← Native' : '→ JS'}: ${message}`,
+        \\                className: 'message-item ' + (fromNative ? 'message-from-native' : 'message-from-js')
+        \\            });
+        \\            
+        \\            // Batch DOM updates
+        \\            if (!logTimer) {
+        \\                logTimer = setTimeout(flushLog, 16); // ~60fps
+        \\            }
+        \\        }
+        \\        
+        \\        function flushLog() {
+        \\            const log = document.getElementById('messageLog');
+        \\            const fragment = document.createDocumentFragment();
+        \\            
+        \\            logBuffer.forEach(entry => {
+        \\                const item = document.createElement('div');
+        \\                item.className = entry.className;
+        \\                item.textContent = entry.message;
+        \\                fragment.appendChild(item);
+        \\            });
+        \\            
+        \\            log.insertBefore(fragment, log.firstChild);
         \\            
         \\            // Keep only last 50 messages
         \\            while (log.children.length > 50) {
         \\                log.removeChild(log.lastChild);
         \\            }
+        \\            
+        \\            logBuffer = [];
+        \\            logTimer = null;
         \\        }
         \\        
         \\        function clearLog() {
@@ -296,12 +320,15 @@ pub fn main() !void {
         \\            
         \\            // Handle random number responses
         \\            window.turf.onMessage('random_response', function(data) {
-        \\                console.log('Random response received:', data);
+        \\                // Update the random number display immediately
+        \\                document.getElementById('randomNumber').textContent = data.value;
+        \\                
+        \\                // Then update stats and log
         \\                receivedCount++;
         \\                updateStats();
-        \\                // Update the random number display
-        \\                document.getElementById('randomNumber').textContent = data.value;
-        \\                addToLog(`Random number: ${data.value}`, true);
+        \\                requestAnimationFrame(function() {
+        \\                    addToLog(`Random number: ${data.value}`, true);
+        \\                });
         \\            });
         \\            
         \\            // Handle counter updates from native

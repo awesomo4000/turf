@@ -6,11 +6,15 @@ const common = @import("common.zig");
 const backend = switch (builtin.os.tag) {
     .macos => @import("platforms/macos/backend.zig"),
     .linux => @import("platforms/linux/backend.zig"),
+    .windows => @import("platforms/windows/backend.zig"),
     else => @compileError("Unsupported platform"),
 };
 
-// JavaScript bridge code to inject
-const turf_js_inject = @embedFile("web/turf.js");
+// JavaScript bridge code to inject (platform-specific)
+const turf_js_inject = switch (builtin.os.tag) {
+    .windows => @embedFile("web/platforms/windows/turf.js"),
+    else => @embedFile("web/turf.js"),
+};
 
 // Additional JavaScript for polling-based communication (used by both platforms)
 const polling_js =
@@ -29,19 +33,15 @@ const polling_js =
     \\        return [];
     \\    };
     \\    
-    \\    // Poll for messages every 16ms (~60Hz)
+    \\    // Poll for messages at a reasonable rate
     \\    setInterval(function() {
     \\        const messages = window.__turf_get_messages();
-    \\        if (messages.length > 0) {
-    \\            console.log('Polling got messages:', messages);
-    \\        }
     \\        messages.forEach(function(msg) {
     \\            if (window.turf && window.turf._handleNativeMessage) {
-    \\                console.log('Calling _handleNativeMessage with:', msg);
     \\                window.turf._handleNativeMessage(msg);
     \\            }
     \\        });
-    \\    }, 16);
+    \\    }, 10);
     \\})();
 ;
 

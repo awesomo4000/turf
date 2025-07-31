@@ -39,6 +39,10 @@ pub fn build(b: *std.Build) void {
             lib.linkSystemLibrary("javascriptcoregtk-6.0");
             lib.linkLibC();
         },
+        .windows => {
+            // Windows uses WebView2
+            // Libraries will be linked when building executable
+        },
         else => {
             std.debug.panic(
                 "Unsupported operating system: {s}\n",
@@ -75,10 +79,44 @@ pub fn build(b: *std.Build) void {
             exe.linkSystemLibrary("javascriptcoregtk-6.0");
             exe.linkLibC();
         },
+        .windows => {
+            // Get target architecture for WebView2Loader selection
+            const arch = target.result.cpu.arch;
+            const arch_dir = switch (arch) {
+                .x86_64 => "windows-x86_64",
+                .aarch64 => "windows-aarch64",
+                .x86 => "windows-x86",
+                else => @panic("Unsupported Windows architecture"),
+            };
+            
+            // Add WebView2Loader library
+            exe.addLibraryPath(b.path(b.fmt("src/platforms/windows/lib/{s}", .{arch_dir})));
+            exe.linkSystemLibrary("WebView2Loader");
+            exe.linkSystemLibrary("ole32");
+            exe.linkSystemLibrary("shell32");
+            exe.linkSystemLibrary("shlwapi");
+            exe.linkSystemLibrary("user32");
+            exe.linkSystemLibrary("gdi32");
+            exe.linkLibC();
+        },
         else => {},
     }
 
     b.installArtifact(exe);
+    
+    // Copy WebView2Loader.dll to output directory on Windows
+    if (target_os == .windows) {
+        const arch = target.result.cpu.arch;
+        const arch_dir = switch (arch) {
+            .x86_64 => "windows-x86_64",
+            .aarch64 => "windows-aarch64",
+            .x86 => "windows-x86",
+            else => @panic("Unsupported Windows architecture"),
+        };
+        const dll_path = b.fmt("src/platforms/windows/lib/{s}/WebView2Loader.dll", .{arch_dir});
+        const install_dll = b.addInstallBinFile(b.path(dll_path), "WebView2Loader.dll");
+        b.getInstallStep().dependOn(&install_dll.step);
+    }
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
@@ -116,10 +154,35 @@ pub fn build(b: *std.Build) void {
             demo.linkSystemLibrary("javascriptcoregtk-6.0");
             demo.linkLibC();
         },
+        .windows => {
+            // Get target architecture for WebView2Loader selection
+            const arch = target.result.cpu.arch;
+            const arch_dir = switch (arch) {
+                .x86_64 => "windows-x86_64",
+                .aarch64 => "windows-aarch64",
+                .x86 => "windows-x86",
+                else => @panic("Unsupported Windows architecture"),
+            };
+            
+            // Add WebView2Loader library
+            demo.addLibraryPath(b.path(b.fmt("src/platforms/windows/lib/{s}", .{arch_dir})));
+            demo.linkSystemLibrary("WebView2Loader");
+            demo.linkSystemLibrary("ole32");
+            demo.linkSystemLibrary("shell32");
+            demo.linkSystemLibrary("shlwapi");
+            demo.linkSystemLibrary("user32");
+            demo.linkSystemLibrary("gdi32");
+            demo.linkLibC();
+        },
         else => {},
     }
 
     b.installArtifact(demo);
+    
+    // Copy WebView2Loader.dll for demo too
+    if (target_os == .windows) {
+        // DLL copy is already handled above for main exe
+    }
 
     const run_demo_cmd = b.addRunArtifact(demo);
     run_demo_cmd.step.dependOn(b.getInstallStep());
@@ -143,6 +206,10 @@ pub fn build(b: *std.Build) void {
             lib_unit_tests.linkSystemLibrary("javascriptcoregtk-6.0");
             lib_unit_tests.linkLibC();
         },
+        .windows => {
+            // Windows test linking
+            lib_unit_tests.linkLibC();
+        },
         else => {},
     }
 
@@ -161,6 +228,10 @@ pub fn build(b: *std.Build) void {
             exe_unit_tests.linkSystemLibrary("gtk4");
             exe_unit_tests.linkSystemLibrary("webkit-6.0");
             exe_unit_tests.linkSystemLibrary("javascriptcoregtk-6.0");
+            exe_unit_tests.linkLibC();
+        },
+        .windows => {
+            // Windows test linking
             exe_unit_tests.linkLibC();
         },
         else => {},
