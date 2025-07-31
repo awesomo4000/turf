@@ -39,6 +39,7 @@ pub const PlatformWindow = struct {
         return PlatformWindow{
             .allocator = allocator,
             .message_queue = message_queue,
+            .prng = std.Random.DefaultPrng.init(@intCast(std.time.nanoTimestamp())),
         };
     }
 
