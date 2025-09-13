@@ -202,11 +202,11 @@ pub const PlatformWindow = struct {
         
         while (window.running.load(.seq_cst)) {
             // Process pending messages
-            const messages = window.message_queue.popAll() catch {
-                std.time.sleep(interval_ms * std.time.ns_per_ms);
+            var messages = window.message_queue.popAll() catch {
+                std.Thread.sleep(interval_ms * std.time.ns_per_ms);
                 continue;
             };
-            defer messages.deinit();
+            defer messages.deinit(window.allocator);
             
             for (messages.items) |msg| {
                 defer {
@@ -235,7 +235,7 @@ pub const PlatformWindow = struct {
                 }
             }
             
-            std.time.sleep(interval_ms * std.time.ns_per_ms);
+            std.Thread.sleep(interval_ms * std.time.ns_per_ms);
         }
     }
 };
