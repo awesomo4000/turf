@@ -29,7 +29,7 @@ pub const MessageQueue = struct {
     pub fn init(allocator: std.mem.Allocator) MessageQueue {
         return .{
             .allocator = allocator,
-            .messages = std.ArrayList(Message).init(allocator),
+            .messages = std.ArrayList(Message){},
             .mutex = std.Thread.Mutex{},
         };
     }
@@ -42,14 +42,14 @@ pub const MessageQueue = struct {
             self.allocator.free(msg.type);
             self.allocator.free(msg.data);
         }
-        self.messages.deinit();
+        self.messages.deinit(self.allocator);
     }
     
     pub fn push(self: *MessageQueue, msg_type: []const u8, data: [:0]const u8) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        try self.messages.append(.{
+        try self.messages.append(self.allocator, .{
             .type = try self.allocator.dupe(u8, msg_type),
             .data = data, // Caller must ensure data remains valid and pass ownership
         });
@@ -60,7 +60,7 @@ pub const MessageQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        try self.messages.append(.{
+        try self.messages.append(self.allocator, .{
             .type = try self.allocator.dupe(u8, msg_type),
             .data = try self.allocator.dupeZ(u8, data),
         });
@@ -70,8 +70,8 @@ pub const MessageQueue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        var result = std.ArrayList(Message).init(self.allocator);
-        try result.appendSlice(self.messages.items);
+        var result = std.ArrayList(Message){};
+        try result.appendSlice(self.allocator, self.messages.items);
         self.messages.clearRetainingCapacity();
         return result;
     }

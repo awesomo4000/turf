@@ -274,13 +274,13 @@ fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
     } else if (std.mem.eql(u8, msg_type.string, "echo")) {
         // Echo back the message
         if (root.get("message")) |msg| {
-            const response = try std.fmt.allocPrintZ(window.allocator, "{{\"message\":\"{s}\"}}", .{msg.string});
+            const response = try std.fmt.allocPrintSentinel(window.allocator, "{{\"message\":\"{s}\"}}", .{msg.string}, 0);
             try window.message_queue.push("echo_response", response);
         }
     } else if (std.mem.eql(u8, msg_type.string, "get_time")) {
         // Send current time
         const timestamp = std.time.timestamp();
-        const response = try std.fmt.allocPrintZ(window.allocator, "{{\"time\":\"{}\"}}", .{timestamp});
+        const response = try std.fmt.allocPrintSentinel(window.allocator, "{{\"time\":\"{}\"}}", .{timestamp}, 0);
         try window.message_queue.push("time_response", response);
     } else if (std.mem.eql(u8, msg_type.string, "get_random")) {
         // Generate random number using stored PRNG
@@ -298,12 +298,12 @@ fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
         }
         
         const value = random.intRangeAtMost(u32, min, max);
-        const response = try std.fmt.allocPrintZ(window.allocator, "{{\"value\":{}}}", .{value});
+        const response = try std.fmt.allocPrintSentinel(window.allocator, "{{\"value\":{}}}", .{value}, 0);
         try window.message_queue.push("random_response", response);
     } else if (std.mem.eql(u8, msg_type.string, "custom")) {
         // Handle custom message
         if (root.get("message")) |msg| {
-            const response = try std.fmt.allocPrintZ(window.allocator, "{{\"message\":\"Received: {s}\"}}", .{msg.string});
+            const response = try std.fmt.allocPrintSentinel(window.allocator, "{{\"message\":\"Received: {s}\"}}", .{msg.string}, 0);
             try window.message_queue.push("custom_response", response);
         }
     } else if (std.mem.eql(u8, msg_type.string, "turf_ready")) {
