@@ -228,7 +228,7 @@ pub fn build(b: *std.Build) void {
         },
         .linux => {
             exe_unit_tests.linkSystemLibrary("gtk4");
-            exe_unit_tests.linkSystemLibrary("webkit-6.0");
+            exe_unit_tests.linkSystemLibrary("webkitgtk-6.0");
             exe_unit_tests.linkSystemLibrary("javascriptcoregtk-6.0");
             exe_unit_tests.linkLibC();
         },
