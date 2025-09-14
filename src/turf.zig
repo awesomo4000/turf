@@ -86,10 +86,11 @@ pub const Window = struct {
 
     pub fn createWindow(self: *Window) void {
         // Combine turf.js with polling mechanism - ensure null termination
-        const js_code = std.fmt.allocPrintZ(
+        const js_code = std.fmt.allocPrintSentinel(
             self.allocator,
             "{s}\n{s}",
             .{ turf_js_inject, polling_js },
+            0,
         ) catch {
             // If allocation fails, use just the turf.js
             // (it's already null-terminated from embedFile)
@@ -115,10 +116,11 @@ pub const Window = struct {
         defer self.allocator.free(abs_path);
 
         // Construct file:// URL
-        const file_url = try std.fmt.allocPrintZ(
+        const file_url = try std.fmt.allocPrintSentinel(
             self.allocator,
             "file://{s}",
             .{abs_path},
+            0,
         );
         defer self.allocator.free(file_url);
 
@@ -138,10 +140,10 @@ pub const Window = struct {
         message_type: []const u8,
         data: anytype,
     ) !void {
-        const json_data = try std.json.stringifyAlloc(
+        const json_data = try std.fmt.allocPrint(
             self.allocator,
-            data,
-            .{},
+            "{f}",
+            .{std.json.fmt(data, .{})},
         );
         defer self.allocator.free(json_data);
 
@@ -179,5 +181,5 @@ fn getAbsolutePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.fs.path.join(allocator, &[_][]const u8{ cwd, path });
 }
 
-// Export platform-specific callbacks
-pub usingnamespace backend;
+// Export platform-specific types
+pub const PlatformWindow = backend.PlatformWindow;

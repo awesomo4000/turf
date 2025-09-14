@@ -136,7 +136,7 @@ pub const PlatformWindow = struct {
 };
 
 // Periodic message pump callback
-fn messagePumpCallback(user_data: ?*anyopaque) callconv(.C) c.gboolean {
+fn messagePumpCallback(user_data: ?*anyopaque) callconv(.c) c.gboolean {
     if (user_data) |window_ptr| {
         const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
 
@@ -154,11 +154,11 @@ fn messagePumpCallback(user_data: ?*anyopaque) callconv(.C) c.gboolean {
 
 // Process the message queue
 fn processMessageQueue(window: *PlatformWindow) c.gboolean {
-    const messages = window.message_queue.popAll() catch |err| {
+    var messages = window.message_queue.popAll() catch |err| {
         std.debug.print("Error popping messages: {}\n", .{err});
         return 1; // Keep timer running even on error
     };
-    defer messages.deinit();
+    defer messages.deinit(window.allocator);
 
     if (messages.items.len == 0) return 1; // Keep timer running
 
@@ -169,8 +169,8 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var js_buffer = std.ArrayList(u8).init(allocator);
-    const writer = js_buffer.writer();
+    var js_buffer = std.ArrayList(u8).initCapacity(allocator, 1024) catch return 1;
+    const writer = js_buffer.writer(allocator);
 
     // Add each message to the queue
     writer.writeAll("window.__turf_message_queue.push(") catch return 1;
@@ -199,7 +199,7 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
 }
 
 // Window destroy callback
-fn onWindowDestroy(widget: ?*c.GtkWidget, user_data: ?*anyopaque) callconv(.C) void {
+fn onWindowDestroy(widget: ?*c.GtkWidget, user_data: ?*anyopaque) callconv(.c) void {
     _ = widget;
     if (user_data) |data| {
         const window = @as(*PlatformWindow, @ptrCast(@alignCast(data)));
@@ -214,7 +214,7 @@ fn onScriptMessage(
     content_manager: *c.WebKitUserContentManager,
     js_value: *c.JSCValue,
     user_data: ?*anyopaque,
-) callconv(.C) void {
+) callconv(.c) void {
     _ = content_manager;
 
     // Convert to string

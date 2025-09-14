@@ -175,10 +175,10 @@ pub const PlatformWindow = struct {
 
     fn messageProcessingThread(self: *PlatformWindow) void {
         while (true) {
-            std.time.sleep(16 * std.time.ns_per_ms); // 60Hz
+            std.Thread.sleep(16 * std.time.ns_per_ms); // 60Hz
 
-            const messages = self.message_queue.popAll() catch continue;
-            defer messages.deinit();
+            var messages = self.message_queue.popAll() catch continue;
+            defer messages.deinit(self.allocator);
 
             if (messages.items.len > 0) {
                 self.sendMessagesToJS(messages.items) catch |err| {
@@ -193,8 +193,8 @@ pub const PlatformWindow = struct {
         defer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        var js_array = std.ArrayList(u8).init(arena_allocator);
-        const writer = js_array.writer();
+        var js_array = std.ArrayList(u8){};
+        const writer = js_array.writer(arena_allocator);
 
         // Use the same polling mechanism as Linux
         try writer.writeAll("window.__turf_message_queue.push(");

@@ -382,6 +382,6 @@ fn nativeMessageThread(window: *turf.Window) !void {
         counter += 1;
         try window.sendMessage("counter_update", .{ .value = counter });
 
-        std.time.sleep(1 * std.time.ns_per_s);
+        std.Thread.sleep(1 * std.time.ns_per_s);
     }
 }

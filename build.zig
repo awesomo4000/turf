@@ -55,11 +55,7 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "turf",
-        .root_source_file = .{
-            .cwd_relative = "src/main.zig",
-        },
-        .target = target,
-        .optimize = optimize,
+        .root_module = exe_mod,
     });
 
     // Platform-specific executable configuration
@@ -129,14 +125,18 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Main demo
-    const demo = b.addExecutable(.{
-        .name = "demo",
+    const demo_mod = b.createModule(.{
         .root_source_file = b.path("src/demo.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    demo.root_module.addImport("turf", libturf);
+    const demo = b.addExecutable(.{
+        .name = "demo",
+        .root_module = demo_mod,
+    });
+
+    demo_mod.addImport("turf", libturf);
 
     switch (target_os) {
         .macos => {
@@ -193,7 +193,9 @@ pub fn build(b: *std.Build) void {
     run_demo_step.dependOn(&run_demo_cmd.step);
 
     // Test configuration
-    const lib_unit_tests = b.addTest(.{ .root_module = libturf });
+    const lib_unit_tests = b.addTest(.{
+        .root_module = libturf,
+    });
 
     // Platform specific test linking
     switch (target_os) {
@@ -226,7 +228,7 @@ pub fn build(b: *std.Build) void {
         },
         .linux => {
             exe_unit_tests.linkSystemLibrary("gtk4");
-            exe_unit_tests.linkSystemLibrary("webkit-6.0");
+            exe_unit_tests.linkSystemLibrary("webkitgtk-6.0");
             exe_unit_tests.linkSystemLibrary("javascriptcoregtk-6.0");
             exe_unit_tests.linkLibC();
         },
