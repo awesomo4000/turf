@@ -183,3 +183,7 @@ fn getAbsolutePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
 // Export platform-specific types
 pub const PlatformWindow = backend.PlatformWindow;
+
+test {
+    _ = backend;
+}
