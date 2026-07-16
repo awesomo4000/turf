@@ -171,7 +171,7 @@ pub const Window = struct {
 
 // Utility function to get absolute path
 fn getAbsolutePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const cwd = try std.process.getCwdAlloc(allocator);
+    const cwd = try std.process.currentPathAlloc(std.Options.debug_io, allocator);
     defer allocator.free(cwd);
 
     if (std.fs.path.isAbsolute(path)) {

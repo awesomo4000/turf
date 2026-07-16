@@ -1,14 +1,8 @@
 const std = @import("std");
 const turf = @import("turf.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = true }){};
-    const allocator = gpa.allocator();
-    defer {
-        if (gpa.deinit() == .leak) {
-            std.debug.print("Memory leaks detected!\n", .{});
-        }
-    }
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // Create message queue externally
     var message_queue = turf.MessageQueue.init(allocator);
@@ -36,7 +30,7 @@ pub fn main() !void {
     window.createWindow();
 
     // Process command line arguments
-    var args = try std.process.argsWithAllocator(allocator);
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args.deinit();
     _ = args.next(); // skip program name
 

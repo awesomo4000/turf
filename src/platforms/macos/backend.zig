@@ -56,7 +56,7 @@ fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
     // Handle different message types
     if (std.mem.eql(u8, msg_type, "ping")) {
         // Send pong response - match Linux format
-        const pong_str = try std.fmt.allocPrint(allocator, "{{\"message\":\"PONG from native!\",\"timestamp\":{d}}}", .{std.time.timestamp()});
+        const pong_str = try std.fmt.allocPrint(allocator, "{{\"message\":\"PONG from native!\",\"timestamp\":{d}}}", .{std.Io.Clock.real.now(std.Options.debug_io).toSeconds()});
         defer allocator.free(pong_str);
         try window.message_queue.pushCopy("pong", pong_str);
     } else if (std.mem.eql(u8, msg_type, "echo")) {
@@ -68,7 +68,7 @@ fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
         }
     } else if (std.mem.eql(u8, msg_type, "get_time")) {
         // Send current time
-        const time_str = try std.fmt.allocPrint(allocator, "{{\"time\":\"{d}\"}}", .{std.time.timestamp()});
+        const time_str = try std.fmt.allocPrint(allocator, "{{\"time\":\"{d}\"}}", .{std.Io.Clock.real.now(std.Options.debug_io).toSeconds()});
         defer allocator.free(time_str);
         try window.message_queue.pushCopy("time_response", time_str);
     } else if (std.mem.eql(u8, msg_type, "get_random")) {
@@ -114,7 +114,7 @@ pub const PlatformWindow = struct {
             .config = config,
             .is_window_created = false,
             .message_queue = message_queue,
-            .prng = std.Random.DefaultPrng.init(@intCast(std.time.nanoTimestamp())),
+            .prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(std.Options.debug_io).toNanoseconds())),
         };
     }
 
@@ -175,7 +175,7 @@ pub const PlatformWindow = struct {
 
     fn messageProcessingThread(self: *PlatformWindow) void {
         while (true) {
-            std.Thread.sleep(16 * std.time.ns_per_ms); // 60Hz
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(16), .awake) catch return; // 60Hz
 
             var messages = self.message_queue.popAll() catch continue;
             defer messages.deinit(self.allocator);
@@ -193,18 +193,19 @@ pub const PlatformWindow = struct {
         defer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        var js_array = std.ArrayList(u8){};
-        const writer = js_array.writer(arena_allocator);
+        var js_array: std.Io.Writer.Allocating = .init(arena_allocator);
+        defer js_array.deinit();
+        const writer = &js_array.writer;
 
         // Use the same polling mechanism as Linux
         try writer.writeAll("window.__turf_message_queue.push(");
         for (messages, 0..) |msg, i| {
             if (i > 0) try writer.writeAll(",");
-            try std.fmt.format(writer, "{{type:'{s}',data:{s}}}", .{ msg.type, msg.data });
+            try writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data });
         }
         try writer.writeAll(");");
 
-        const js_code = try arena_allocator.dupeZ(u8, js_array.items);
+        const js_code = try arena_allocator.dupeZ(u8, js_array.written());
         std.debug.print("macOS: Sending JS: {s}\n", .{js_code});
         self.evalJS(js_code);
     }

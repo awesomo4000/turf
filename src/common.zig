@@ -24,19 +24,19 @@ pub const Message = struct {
 pub const MessageQueue = struct {
     allocator: std.mem.Allocator,
     messages: std.ArrayList(Message),
-    mutex: std.Thread.Mutex,
+    mutex: std.Io.Mutex,
     
     pub fn init(allocator: std.mem.Allocator) MessageQueue {
         return .{
             .allocator = allocator,
-            .messages = std.ArrayList(Message){},
-            .mutex = std.Thread.Mutex{},
+            .messages = .empty,
+            .mutex = .init,
         };
     }
     
     pub fn deinit(self: *MessageQueue) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
         for (self.messages.items) |msg| {
             self.allocator.free(msg.type);
@@ -46,8 +46,8 @@ pub const MessageQueue = struct {
     }
     
     pub fn push(self: *MessageQueue, msg_type: []const u8, data: [:0]const u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
         try self.messages.append(self.allocator, .{
             .type = try self.allocator.dupe(u8, msg_type),
@@ -57,8 +57,8 @@ pub const MessageQueue = struct {
     
     // Alternative method that copies the data
     pub fn pushCopy(self: *MessageQueue, msg_type: []const u8, data: []const u8) !void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
         try self.messages.append(self.allocator, .{
             .type = try self.allocator.dupe(u8, msg_type),
@@ -67,10 +67,10 @@ pub const MessageQueue = struct {
     }
     
     pub fn popAll(self: *MessageQueue) !std.ArrayList(Message) {
-        self.mutex.lock();
-        defer self.mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
-        var result = std.ArrayList(Message){};
+        var result: std.ArrayList(Message) = .empty;
         try result.appendSlice(self.allocator, self.messages.items);
         self.messages.clearRetainingCapacity();
         return result;

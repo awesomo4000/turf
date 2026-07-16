@@ -34,10 +34,10 @@ pub fn build(b: *std.Build) void {
             // when building library
         },
         .linux => {
-            lib.linkSystemLibrary("gtk4");
-            lib.linkSystemLibrary("webkitgtk-6.0");
-            lib.linkSystemLibrary("javascriptcoregtk-6.0");
-            lib.linkLibC();
+            lib.root_module.linkSystemLibrary("gtk4", .{});
+            lib.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+            lib.root_module.linkSystemLibrary("javascriptcoregtk-6.0", .{});
+            lib.root_module.link_libc = true;
         },
         .windows => {
             // Windows uses WebView2
@@ -61,19 +61,19 @@ pub fn build(b: *std.Build) void {
     // Platform-specific executable configuration
     switch (target_os) {
         .macos => {
-            exe.linkFramework("Cocoa");
-            exe.linkFramework("WebKit");
-            exe.addCSourceFile(.{
+            exe.root_module.linkFramework("Cocoa", .{});
+            exe.root_module.linkFramework("WebKit", .{});
+            exe.root_module.addCSourceFile(.{
                 .file = b.path("src/platforms/macos/cocoa_bridge.m"),
                 .flags = &[_][]const u8{"-fobjc-arc"},
             });
-            exe.linkLibC();
+            exe.root_module.link_libc = true;
         },
         .linux => {
-            exe.linkSystemLibrary("gtk4");
-            exe.linkSystemLibrary("webkitgtk-6.0");
-            exe.linkSystemLibrary("javascriptcoregtk-6.0");
-            exe.linkLibC();
+            exe.root_module.linkSystemLibrary("gtk4", .{});
+            exe.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+            exe.root_module.linkSystemLibrary("javascriptcoregtk-6.0", .{});
+            exe.root_module.link_libc = true;
         },
         .windows => {
             // Get target architecture for WebView2Loader selection
@@ -86,14 +86,14 @@ pub fn build(b: *std.Build) void {
             };
             
             // Add WebView2Loader library
-            exe.addLibraryPath(b.path(b.fmt("src/platforms/windows/lib/{s}", .{arch_dir})));
-            exe.linkSystemLibrary("WebView2Loader");
-            exe.linkSystemLibrary("ole32");
-            exe.linkSystemLibrary("shell32");
-            exe.linkSystemLibrary("shlwapi");
-            exe.linkSystemLibrary("user32");
-            exe.linkSystemLibrary("gdi32");
-            exe.linkLibC();
+            exe.root_module.addLibraryPath(b.path(b.fmt("src/platforms/windows/lib/{s}", .{arch_dir})));
+            exe.root_module.linkSystemLibrary("WebView2Loader", .{});
+            exe.root_module.linkSystemLibrary("ole32", .{});
+            exe.root_module.linkSystemLibrary("shell32", .{});
+            exe.root_module.linkSystemLibrary("shlwapi", .{});
+            exe.root_module.linkSystemLibrary("user32", .{});
+            exe.root_module.linkSystemLibrary("gdi32", .{});
+            exe.root_module.link_libc = true;
         },
         else => {},
     }
@@ -140,19 +140,19 @@ pub fn build(b: *std.Build) void {
 
     switch (target_os) {
         .macos => {
-            demo.linkFramework("Cocoa");
-            demo.linkFramework("WebKit");
-            demo.addCSourceFile(.{
+            demo.root_module.linkFramework("Cocoa", .{});
+            demo.root_module.linkFramework("WebKit", .{});
+            demo.root_module.addCSourceFile(.{
                 .file = b.path("src/platforms/macos/cocoa_bridge.m"),
                 .flags = &[_][]const u8{"-fobjc-arc"},
             });
-            demo.linkLibC();
+            demo.root_module.link_libc = true;
         },
         .linux => {
-            demo.linkSystemLibrary("gtk4");
-            demo.linkSystemLibrary("webkitgtk-6.0");
-            demo.linkSystemLibrary("javascriptcoregtk-6.0");
-            demo.linkLibC();
+            demo.root_module.linkSystemLibrary("gtk4", .{});
+            demo.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+            demo.root_module.linkSystemLibrary("javascriptcoregtk-6.0", .{});
+            demo.root_module.link_libc = true;
         },
         .windows => {
             // Get target architecture for WebView2Loader selection
@@ -165,14 +165,14 @@ pub fn build(b: *std.Build) void {
             };
             
             // Add WebView2Loader library
-            demo.addLibraryPath(b.path(b.fmt("src/platforms/windows/lib/{s}", .{arch_dir})));
-            demo.linkSystemLibrary("WebView2Loader");
-            demo.linkSystemLibrary("ole32");
-            demo.linkSystemLibrary("shell32");
-            demo.linkSystemLibrary("shlwapi");
-            demo.linkSystemLibrary("user32");
-            demo.linkSystemLibrary("gdi32");
-            demo.linkLibC();
+            demo.root_module.addLibraryPath(b.path(b.fmt("src/platforms/windows/lib/{s}", .{arch_dir})));
+            demo.root_module.linkSystemLibrary("WebView2Loader", .{});
+            demo.root_module.linkSystemLibrary("ole32", .{});
+            demo.root_module.linkSystemLibrary("shell32", .{});
+            demo.root_module.linkSystemLibrary("shlwapi", .{});
+            demo.root_module.linkSystemLibrary("user32", .{});
+            demo.root_module.linkSystemLibrary("gdi32", .{});
+            demo.root_module.link_libc = true;
         },
         else => {},
     }
@@ -203,22 +203,29 @@ pub fn build(b: *std.Build) void {
             // TODO
         },
         .linux => {
-            lib_unit_tests.linkSystemLibrary("gtk4");
-            lib_unit_tests.linkSystemLibrary("webkitgtk-6.0");
-            lib_unit_tests.linkSystemLibrary("javascriptcoregtk-6.0");
-            lib_unit_tests.linkLibC();
+            lib_unit_tests.root_module.linkSystemLibrary("gtk4", .{});
+            lib_unit_tests.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+            lib_unit_tests.root_module.linkSystemLibrary("javascriptcoregtk-6.0", .{});
+            lib_unit_tests.root_module.link_libc = true;
         },
         .windows => {
             // Windows test linking
-            lib_unit_tests.linkLibC();
+            lib_unit_tests.root_module.link_libc = true;
         },
         else => {},
     }
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
+    const exe_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    exe_test_mod.addImport("turf", libturf);
+
     const exe_unit_tests = b.addTest(.{
-        .root_module = exe_mod,
+        .root_module = exe_test_mod,
     });
 
     // Platform-specific test linking for exe module
@@ -227,14 +234,14 @@ pub fn build(b: *std.Build) void {
             // TODO
         },
         .linux => {
-            exe_unit_tests.linkSystemLibrary("gtk4");
-            exe_unit_tests.linkSystemLibrary("webkitgtk-6.0");
-            exe_unit_tests.linkSystemLibrary("javascriptcoregtk-6.0");
-            exe_unit_tests.linkLibC();
+            exe_unit_tests.root_module.linkSystemLibrary("gtk4", .{});
+            exe_unit_tests.root_module.linkSystemLibrary("webkitgtk-6.0", .{});
+            exe_unit_tests.root_module.linkSystemLibrary("javascriptcoregtk-6.0", .{});
+            exe_unit_tests.root_module.link_libc = true;
         },
         .windows => {
             // Windows test linking
-            exe_unit_tests.linkLibC();
+            exe_unit_tests.root_module.link_libc = true;
         },
         else => {},
     }

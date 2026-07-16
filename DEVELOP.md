@@ -1,16 +1,16 @@
-# CLAUDE.md
+# Development Guide
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This document describes the project architecture and development conventions.
 
 ## Overview
 
-Turf is a cross-platform application framework written in Zig that creates native windows with embedded WebKit webviews. It bridges Objective-C/Cocoa on macOS with a JavaScript runtime, and WebKIT6.0/GTK4/JavaScriptCore allowing for native desktop applications with web-based UIs. 
+Turf is a cross-platform application framework written in Zig that creates native windows with embedded webviews. It uses WebKit on macOS, WebKitGTK on Linux, and WebView2 on Windows to support native desktop applications with web-based interfaces.
 
 ## Build Commands
 
 - **Build**: `zig build`
 - **Run**: `zig build run`
-- **Test**: `zig build test` (Note: Tests may fail due to missing Obj-C symbols)
+- **Test**: `zig build test`
 - **Clean**: `rm -rf zig-out/ .zig-cache/`
 
 ## Architecture
@@ -21,13 +21,12 @@ Turf is a cross-platform application framework written in Zig that creates nativ
    - Window creation, configuration, and lifecycle
    - JavaScript injection and evaluation
    - Message passing between native and web layers
-   - File Dialog Integration (in progress)
 
 2. **Platform Bridges**
-   - MacOS:  (`src/cocoa_bridge.m`): Objective-C bridge for macOS
-   - Linux:  Lates GTK4 WebKit6.0 integration
-   - Native window management
-   - Event handling and message passing
+   - macOS: Objective-C bridge in `src/platforms/macos/cocoa_bridge.m`
+   - Linux: GTK4 and WebKitGTK 6.0 integration
+   - Windows: WebView2 integration
+   - Native window management, event handling, and message passing
 
 3. **Entry Point** (`src/main.zig`): Application initialization
    - Command-line argument handling (URLs or local files)
@@ -46,10 +45,7 @@ Turf is a cross-platform application framework written in Zig that creates nativ
 
 ## Development Guidelines
 
-- **Zig Version**: Requires 0.14.1
-- **Platform**: Currently:
-      - MacOS (Cocoa/WebKit frameworks required)
-      - Linux (GTK4, WebKit6.0)
+- **Zig Version**: Requires 0.16.0
+- **Platforms**: Keep platform-specific code under `src/platforms/`
 - **Error Handling**: Use error unions (`!`) and handle with `try`/`catch`
 - **Testing**: Unit tests can be added inline with `test "description" { ... }`
-

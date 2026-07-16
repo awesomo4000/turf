@@ -2,10 +2,8 @@ const std = @import("std");
 const turf = @import("turf");
 
 // Demo showcasing full bidirectional messaging capabilities
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // Create message queue externally
     var message_queue = turf.MessageQueue.init(allocator);
@@ -382,6 +380,6 @@ fn nativeMessageThread(window: *turf.Window) !void {
         counter += 1;
         try window.sendMessage("counter_update", .{ .value = counter });
 
-        std.Thread.sleep(1 * std.time.ns_per_s);
+        std.Io.sleep(std.Options.debug_io, .fromSeconds(1), .awake) catch return;
     }
 }

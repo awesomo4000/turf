@@ -35,7 +35,7 @@ pub const PlatformWindow = struct {
             .js_inject_code = "",
             .running = std.atomic.Value(bool).init(true),
             .initial_html = null,
-            .prng = std.Random.DefaultPrng.init(@intCast(std.time.nanoTimestamp())),
+            .prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(std.Options.debug_io).toNanoseconds())),
         };
     }
 
@@ -203,7 +203,7 @@ pub const PlatformWindow = struct {
         while (window.running.load(.seq_cst)) {
             // Process pending messages
             var messages = window.message_queue.popAll() catch {
-                std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+                std.Io.sleep(std.Options.debug_io, .fromMilliseconds(interval_ms), .awake) catch break;
                 continue;
             };
             defer messages.deinit(window.allocator);
@@ -235,7 +235,7 @@ pub const PlatformWindow = struct {
                 }
             }
             
-            std.Thread.sleep(interval_ms * std.time.ns_per_ms);
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(interval_ms), .awake) catch break;
         }
     }
 };
@@ -279,7 +279,7 @@ fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
         }
     } else if (std.mem.eql(u8, msg_type.string, "get_time")) {
         // Send current time
-        const timestamp = std.time.timestamp();
+        const timestamp = std.Io.Clock.real.now(std.Options.debug_io).toSeconds();
         const response = try std.fmt.allocPrintSentinel(window.allocator, "{{\"time\":\"{}\"}}", .{timestamp}, 0);
         try window.message_queue.push("time_response", response);
     } else if (std.mem.eql(u8, msg_type.string, "get_random")) {

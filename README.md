@@ -1,22 +1,31 @@
-# Turf
+<p align="left">
+  <img src="img/turf.png" alt="Turf: portable webviews for desktop applications" width="660">
+</p>
 
-Lightweight web views with message passing between native code (Zig) and
-JavaScript. Creates native windows with embedded WebKit webviews. Build desktop applications using web technologies. 
+# turf
+
+Lightweight webviews with message passing between native code (Zig) and JavaScript. Turf creates native windows with platform webviews for building portable desktop applications using web technologies.
 
 ## Features
 
-- Native window management with WebKit integration
-- Bidirectional JavaScript ↔ Native communication via Messages
-- Cmd-Q works
-- Cmd/+ and Cmd/- zoom the window with persitence across reloads
-- Native file dialogs
+- Native window management with platform webview integration
+- Bidirectional JSON message passing between JavaScript and Zig
+- URL, local file, and HTML content loading
+- JavaScript evaluation from native code
+- Persistent zoom controls and standard application quit behavior on macOS
 
+## Supported OSes
+
+| Operating system | Native window layer | Web technology | Requirements |
+| --- | --- | --- | --- |
+| macOS | Cocoa | WebKit (`WKWebView`) | Xcode Command Line Tools |
+| Linux | GTK4 | WebKitGTK 6.0 and JavaScriptCoreGTK 6.0 | GTK4 and WebKitGTK development packages |
+| Windows | Win32 | Microsoft Edge WebView2 | WebView2 Runtime |
 
 ### Prerequisites
 
-- Zig 0.14.1
-- macOS / Xcode Command Line Tools
-- Linux / GTK4/WebKit6.0/JavaScriptCore
+- Zig 0.16.0
+- The platform requirements listed above
 
 ### Building
 
@@ -26,6 +35,9 @@ zig build
 
 # Run the application
 zig build run
+
+# Run the messaging demo
+zig build run-demo
 
 # Run tests
 zig build test
@@ -46,28 +58,25 @@ zig build test
 
 ## Keyboard Shortcuts
 
-**MacOS**
-- **Cmd +** : Zoom in
-- **Cmd -** : Zoom out
-- **Cmd 0** : Reset zoom
-- **Cmd Q** : Quit
+These shortcuts are currently available on macOS:
+
+| Shortcut | Action |
+| --- | --- |
+| <kbd>Cmd</kbd> + <kbd>+</kbd> | Zoom in |
+| <kbd>Cmd</kbd> + <kbd>-</kbd> | Zoom out |
+| <kbd>Cmd</kbd> + <kbd>0</kbd> | Reset zoom |
+| <kbd>Cmd</kbd> + <kbd>Q</kbd> | Quit |
 
 ## Architecture
 
 Turf uses a layered architecture:
 
-- **Native Layer** (Zig): Window management and application lifecycle
+- **Native layer** (Zig): Window management and application lifecycle
+- **Bridge layer**: Platform-specific Cocoa/WebKit, GTK4/WebKitGTK, or Win32/WebView2 integration
+- **Web layer** (JavaScript/HTML): User interface and application logic
 
-- **Bridge Layer** 
-  - **MacOS** (Objective-C): Platform-specific WebKit integration
-  - **Linux** (C): WebKitGTK6.0/JavaScriptCore (GTK4)
-
-- **Web Layer** (JavaScript/HTML): User interface and application logic
-
-
-Communication between layers uses JSON message passing.
+Communication between the native and web layers uses JSON message passing.
 
 ## Development
 
-See [CLAUDE.md](CLAUDE.md) for detailed development guidelines and architecture documentation.
-
+See [DEVELOP.md](DEVELOP.md) for detailed development guidelines and architecture documentation.

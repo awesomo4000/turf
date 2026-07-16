@@ -1,4 +1,5 @@
 x/
+.DS_Store
 zig-out/
 .zig-cache/
 .vscode/

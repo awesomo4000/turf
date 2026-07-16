@@ -39,7 +39,7 @@ pub const PlatformWindow = struct {
         return PlatformWindow{
             .allocator = allocator,
             .message_queue = message_queue,
-            .prng = std.Random.DefaultPrng.init(@intCast(std.time.nanoTimestamp())),
+            .prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(std.Options.debug_io).toNanoseconds())),
         };
     }
 
@@ -169,20 +169,21 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var js_buffer = std.ArrayList(u8).initCapacity(allocator, 1024) catch return 1;
-    const writer = js_buffer.writer(allocator);
+    var js_buffer: std.Io.Writer.Allocating = .initCapacity(allocator, 1024) catch return 1;
+    defer js_buffer.deinit();
+    const writer = &js_buffer.writer;
 
     // Add each message to the queue
     writer.writeAll("window.__turf_message_queue.push(") catch return 1;
     for (messages.items, 0..) |msg, i| {
         if (i > 0) writer.writeAll(",") catch return 1;
         // Send the data as a JavaScript object, not a string
-        std.fmt.format(writer, "{{type:'{s}',data:{s}}}", .{ msg.type, msg.data }) catch return 1;
+        writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data }) catch return 1;
         std.debug.print("Sending message to JS: type={s}, data={s}\n", .{ msg.type, msg.data });
     }
     writer.writeAll(");") catch return 1;
 
-    const js_code = allocator.dupeZ(u8, js_buffer.items) catch return 1;
+    const js_code = allocator.dupeZ(u8, js_buffer.written()) catch return 1;
 
     // Execute JavaScript
     if (window.webview) |webview| {
@@ -297,7 +298,7 @@ fn onScriptMessage(
             // Message queue is always valid (it's a pointer to the Window's queue)
 
             // Send pong response
-            const pong_data = std.fmt.allocPrint(window.allocator, "{{\"message\":\"PONG from native!\",\"timestamp\":{}}}", .{std.time.timestamp()}) catch {
+            const pong_data = std.fmt.allocPrint(window.allocator, "{{\"message\":\"PONG from native!\",\"timestamp\":{}}}", .{std.Io.Clock.real.now(std.Options.debug_io).toSeconds()}) catch {
                 std.debug.print("Failed to format pong data\n", .{});
                 return;
             };
@@ -354,7 +355,7 @@ fn onScriptMessage(
             std.debug.print("Time requested\n", .{});
 
             // Get current time and format it
-            const timestamp = std.time.timestamp();
+            const timestamp = std.Io.Clock.real.now(std.Options.debug_io).toSeconds();
             const time_str = std.fmt.allocPrint(window.allocator, "{{\"time\":\"{d}\"}}", .{timestamp}) catch return;
             const time_str_z = window.allocator.dupeZ(u8, time_str) catch {
                 window.allocator.free(time_str);

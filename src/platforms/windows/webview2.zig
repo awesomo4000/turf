@@ -6,14 +6,17 @@ pub const win = std.os.windows;
 pub const WINAPI = std.builtin.CallingConvention.winapi;
 
 // Windows type aliases
-pub const HRESULT = win.HRESULT;
+pub const HRESULT = i32;
+pub const WPARAM = usize;
+pub const LPARAM = isize;
+pub const LRESULT = isize;
 pub const HWND = win.HWND;
 pub const HINSTANCE = win.HINSTANCE;
 pub const BOOL = win.BOOL;
-pub const S_OK = win.S_OK;
+pub const S_OK: HRESULT = 0;
 pub const E_FAIL: HRESULT = @bitCast(@as(u32, 0x80004005));
-pub const TRUE: BOOL = 1;
-pub const FALSE: BOOL = 0;
+pub const TRUE: BOOL = .TRUE;
+pub const FALSE: BOOL = .FALSE;
 
 // Window styles
 pub const WS_OVERLAPPEDWINDOW = 0x00CF0000;
@@ -38,7 +41,7 @@ pub const RECT = extern struct {
 
 pub const WNDCLASSW = extern struct {
     style: u32,
-    lpfnWndProc: *const fn (HWND, u32, win.WPARAM, win.LPARAM) callconv(WINAPI) win.LRESULT,
+    lpfnWndProc: *const fn (HWND, u32, WPARAM, LPARAM) callconv(WINAPI) LRESULT,
     cbClsExtra: i32,
     cbWndExtra: i32,
     hInstance: HINSTANCE,
@@ -52,8 +55,8 @@ pub const WNDCLASSW = extern struct {
 pub const MSG = extern struct {
     hwnd: ?HWND,
     message: u32,
-    wParam: win.WPARAM,
-    lParam: win.LPARAM,
+    wParam: WPARAM,
+    lParam: LPARAM,
     time: u32,
     pt: extern struct { x: i32, y: i32 },
 };
@@ -65,11 +68,11 @@ pub extern "user32" fn ShowWindow(HWND, i32) callconv(WINAPI) win.BOOL;
 pub extern "user32" fn GetMessageW(*MSG, ?HWND, u32, u32) callconv(WINAPI) win.BOOL;
 pub extern "user32" fn PeekMessageW(*MSG, ?HWND, u32, u32, u32) callconv(WINAPI) win.BOOL;
 pub extern "user32" fn TranslateMessage(*const MSG) callconv(WINAPI) win.BOOL;
-pub extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) win.LRESULT;
+pub extern "user32" fn DispatchMessageW(*const MSG) callconv(WINAPI) LRESULT;
 pub const PM_REMOVE = 0x0001;
 pub extern "user32" fn PostQuitMessage(i32) callconv(WINAPI) void;
-pub extern "user32" fn PostMessageW(HWND, u32, win.WPARAM, win.LPARAM) callconv(WINAPI) win.BOOL;
-pub extern "user32" fn DefWindowProcW(HWND, u32, win.WPARAM, win.LPARAM) callconv(WINAPI) win.LRESULT;
+pub extern "user32" fn PostMessageW(HWND, u32, WPARAM, LPARAM) callconv(WINAPI) win.BOOL;
+pub extern "user32" fn DefWindowProcW(HWND, u32, WPARAM, LPARAM) callconv(WINAPI) LRESULT;
 pub extern "user32" fn GetClientRect(HWND, *RECT) callconv(WINAPI) win.BOOL;
 pub extern "kernel32" fn GetModuleHandleW(?[*:0]const u16) callconv(WINAPI) ?HINSTANCE;
 
@@ -258,12 +261,12 @@ pub const WebView = struct {
     
     // Message queue for thread-safe communication
     message_queue: std.ArrayList([]const u8),
-    queue_mutex: std.Thread.Mutex = .{},
+    queue_mutex: std.Io.Mutex = .init,
     js_inject: ?[]const u8 = null,
     
     // Script execution queue for thread-safe ExecuteScript
     script_queue: std.ArrayList([]const u8),
-    script_mutex: std.Thread.Mutex = .{},
+    script_mutex: std.Io.Mutex = .init,
     
     // Event tokens for cleanup
     nav_starting_token: ?EventRegistrationToken = null,
@@ -301,14 +304,8 @@ pub const WebView = struct {
             .options = options,
             .url = options.url,
             .user_data_folder = try allocator.alloc(u8, std.fs.max_path_bytes),
-            .message_queue = std.ArrayList([]const u8){
-                .items = &.{},
-                .capacity = 0,
-            },
-            .script_queue = std.ArrayList([]const u8){
-                .items = &.{},
-                .capacity = 0,
-            },
+            .message_queue = .empty,
+            .script_queue = .empty,
             .js_inject = options.js_inject,
         };
         std.debug.print("WebView2 struct initialized\n", .{});
@@ -421,8 +418,8 @@ pub const WebView = struct {
         
         // Clean up message queue
         {
-            self.queue_mutex.lock();
-            defer self.queue_mutex.unlock();
+            std.Io.Threaded.mutexLock(&self.queue_mutex);
+            defer std.Io.Threaded.mutexUnlock(&self.queue_mutex);
             for (self.message_queue.items) |message| {
                 allocator.free(message);
             }
@@ -431,8 +428,8 @@ pub const WebView = struct {
         
         // Clean up script queue
         {
-            self.script_mutex.lock();
-            defer self.script_mutex.unlock();
+            std.Io.Threaded.mutexLock(&self.script_mutex);
+            defer std.Io.Threaded.mutexUnlock(&self.script_mutex);
             for (self.script_queue.items) |script| {
                 allocator.free(script);
             }
@@ -467,8 +464,8 @@ pub const WebView = struct {
         var msg: MSG = undefined;
         while (true) {
             const result = GetMessageW(&msg, null, 0, 0);
-            if (result == 0) break; // WM_QUIT
-            if (result == -1) continue; // Error
+            if (!result.toBool()) break; // WM_QUIT
+            if (@intFromEnum(result) == -1) continue; // Error
             
             _ = TranslateMessage(&msg);
             _ = DispatchMessageW(&msg);
@@ -532,7 +529,7 @@ pub const WebView = struct {
         self.user_data_folder[path_len] = 0;
         
         // Check if folder existed
-        self.user_data_existed = if (std.fs.cwd().access(self.user_data_folder[0..path_len], .{})) |_| true else |_| false;
+        self.user_data_existed = if (std.Io.Dir.accessAbsolute(std.Options.debug_io, self.user_data_folder[0..path_len], .{})) |_| true else |_| false;
         
         
         // Convert to UTF-16
@@ -566,7 +563,7 @@ pub const WebView = struct {
         const utf8_len = try std.unicode.utf16LeToUtf8(&temp_path_utf8, temp_path_utf16[0..temp_len]);
         
         // Create unique folder name with timestamp
-        const timestamp = std.time.timestamp();
+        const timestamp = std.Io.Clock.real.now(std.Options.debug_io).toSeconds();
         const user_data_path = try std.fmt.bufPrint(
             self.user_data_folder,
             "{s}wumpa_temp_{}",
@@ -667,9 +664,9 @@ pub const WebView = struct {
             // Try multiple times with delays
             var attempts: u32 = 0;
             while (attempts < 5) : (attempts += 1) {
-                std.Thread.sleep(100 * std.time.ns_per_ms);
+                std.Io.sleep(std.Options.debug_io, .fromMilliseconds(100), .awake) catch break;
                 
-                std.fs.cwd().deleteTree(folder_path) catch |err| {
+                std.Io.Dir.cwd().deleteTree(std.Options.debug_io, folder_path) catch |err| {
                     if (attempts == 4) {
                         std.debug.print("Warning: Could not delete user data folder after {} attempts: {}\n", .{ attempts + 1, err });
                     }
@@ -870,8 +867,8 @@ pub const WebView = struct {
     
     pub fn executeScript(self: *Self, script: []const u8) void {
         // Queue the script for execution on the UI thread
-        self.script_mutex.lock();
-        defer self.script_mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.script_mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.script_mutex);
         
         const script_copy = self.allocator.dupe(u8, script) catch {
             std.debug.print("Failed to allocate script copy\n", .{});
@@ -896,8 +893,8 @@ pub const WebView = struct {
             return;
         }
         
-        self.script_mutex.lock();
-        defer self.script_mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.script_mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.script_mutex);
         
         while (self.script_queue.items.len > 0) {
             const script = self.script_queue.orderedRemove(0);
@@ -935,8 +932,8 @@ pub const WebView = struct {
             return error.ShuttingDown;
         }
         
-        self.queue_mutex.lock();
-        defer self.queue_mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.queue_mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.queue_mutex);
         
         // Duplicate the message since it might be from a temporary buffer
         const json_copy = try self.allocator.dupe(u8, json);
@@ -950,8 +947,8 @@ pub const WebView = struct {
     
     // Process queued messages from the UI thread
     pub fn processMessageQueue(self: *Self) void {
-        self.queue_mutex.lock();
-        defer self.queue_mutex.unlock();
+        std.Io.Threaded.mutexLock(&self.queue_mutex);
+        defer std.Io.Threaded.mutexUnlock(&self.queue_mutex);
         
         while (self.message_queue.items.len > 0) {
             const message = self.message_queue.orderedRemove(0);
@@ -961,7 +958,7 @@ pub const WebView = struct {
         }
     }
     
-    fn windowProc(hwnd: HWND, msg: u32, wparam: win.WPARAM, lparam: win.LPARAM) callconv(WINAPI) win.LRESULT {
+    fn windowProc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) callconv(WINAPI) LRESULT {
         switch (msg) {
             WM_CREATE => {
                 const create_struct: *const CREATESTRUCTW = @ptrFromInt(@as(usize, @intCast(lparam)));
@@ -1487,4 +1484,3 @@ const ICoreWebView2WebMessageReceivedEventArgs = extern struct {
         TryGetWebMessageAsString: *const fn(*ICoreWebView2WebMessageReceivedEventArgs, *?[*:0]u16) callconv(WINAPI) HRESULT,
     };
 };
-

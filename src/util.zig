@@ -11,7 +11,7 @@ pub fn getAbsolutePath(
     }
 
     // Get current working directory
-    const cwd = try std.process.getCwdAlloc(allocator);
+    const cwd = try std.process.currentPathAlloc(std.Options.debug_io, allocator);
     defer allocator.free(cwd);
 
     // Create absolute path by joining cwd and path
