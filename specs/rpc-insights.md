@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Copyright (c) 2025-2026 awesomo4000 -->
+
 # RPC Insights for Turf
 
 ## Key Insights for Bidirectional Calls

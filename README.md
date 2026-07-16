@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- Copyright (c) 2025-2026 awesomo4000 -->
+
 <p align="left">
   <img src="img/turf.png" alt="Turf: portable webviews for desktop applications" width="660">
 </p>
@@ -80,3 +83,16 @@ Communication between the native and web layers uses JSON message passing.
 ## Development
 
 See [DEVELOP.md](DEVELOP.md) for detailed development guidelines and architecture documentation.
+
+## License
+
+Copyright (c) 2025-2026 awesomo4000. Original Turf code is licensed under the
+[Mozilla Public License 2.0](LICENSE).
+When MPL-covered Turf files are distributed with modifications, those files and
+their modifications must remain available under MPL-2.0. Separate applications
+and source files that merely import, link to, or use Turf may remain proprietary
+or use another license.
+
+Microsoft WebView2 loader binaries retain their upstream terms and are not
+covered by Turf's MPL-2.0 license. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.

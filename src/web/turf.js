@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 awesomo4000
+
 // This script is injected into the webview when the window is created.
 // It provides the turf API for communication between JavaScript and native code.
 

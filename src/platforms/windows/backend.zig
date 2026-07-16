@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2025-2026 awesomo4000
+
 // Windows platform backend using WebView2
 const std = @import("std");
 const webview2 = @import("webview2.zig");
