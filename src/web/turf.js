@@ -57,6 +57,13 @@
         });
     }
 
+    function nativeFileSave() {
+        send({
+            type: 'show_save_dialog',
+            data: null,
+        });
+    }
+
     // Internal function to handle messages from native
     function handleNativeMessage(msg) {
         console.log('Native message received:', msg);
@@ -77,6 +84,7 @@
         onFileSelected: onFileSelected,
         onMessage: onMessage,
         nativeFileSelect: nativeFileSelect,
+        nativeFileSave: nativeFileSave,
         _handleNativeMessage: handleNativeMessage
     };
 

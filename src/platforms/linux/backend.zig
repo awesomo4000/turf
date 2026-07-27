@@ -18,6 +18,7 @@ pub const PlatformWindow = struct {
     webview: ?*c.GtkWidget = null,
     user_content_manager: ?*c.WebKitUserContentManager = null,
     message_queue: *common.MessageQueue,
+    message_handler: ?common.MessageHandler = null,
     main_loop: ?*c.GMainLoop = null,
     prng: std.Random.DefaultPrng,
 
@@ -129,6 +130,10 @@ pub const PlatformWindow = struct {
         }
     }
 
+    pub fn setMessageHandler(self: *PlatformWindow, handler: ?common.MessageHandler) void {
+        self.message_handler = handler;
+    }
+
     // Start a periodic message pump (call this after window is created)
     pub fn startMessagePump(self: *PlatformWindow, interval_ms: u32) void {
         std.debug.print("Linux: Starting message pump with interval {}ms\n", .{interval_ms});
@@ -234,6 +239,10 @@ fn onScriptMessage(
     // Parse JSON message
     if (user_data) |window_ptr| {
         const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
+        if (window.message_handler) |handler| {
+            handler.dispatch(message);
+        }
+
 
         var arena = std.heap.ArenaAllocator.init(window.allocator);
         defer arena.deinit();

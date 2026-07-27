@@ -15,6 +15,7 @@ pub const PlatformWindow = struct {
     allocator: std.mem.Allocator,
     webview: ?*webview2.WebView,
     message_queue: *common.MessageQueue,
+    message_handler: ?common.MessageHandler = null,
     message_pump_thread: ?std.Thread,
     config: common.WindowConfig,
     js_inject_code: [:0]const u8,
@@ -132,6 +133,10 @@ pub const PlatformWindow = struct {
         if (self.webview) |wv| {
             wv.executeScript(js_code);
         }
+    }
+
+    pub fn setMessageHandler(self: *Self, handler: ?common.MessageHandler) void {
+        self.message_handler = handler;
     }
 
     pub fn setHTML(self: *Self, html: [:0]const u8) void {
@@ -259,6 +264,10 @@ pub fn onJavaScriptMessage(message: []const u8) void {
 }
 
 fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
+    if (window.message_handler) |handler| {
+        handler.dispatch(message);
+    }
+
     // For the demo app, we'll handle messages directly here
     // Parse the JSON message
     const parsed = std.json.parseFromSlice(std.json.Value, window.allocator, message, .{}) catch {

@@ -29,6 +29,7 @@ extern void onJavaScriptMessage(const char* message);
 //
 static WKWebView *webView = nil;
 static NSOpenPanel *openPanel = nil;
+static NSSavePanel *savePanel = nil;
 static BOOL isShowingFileDialog = NO;
 
 // Custom WebView class to suppress beeps
@@ -274,6 +275,7 @@ bool NSApplicationLoad(void) {
     
     // Initialize the open panel
     openPanel = [NSOpenPanel openPanel];
+    savePanel = [NSSavePanel savePanel];
     [openPanel setCanChooseFiles:YES];
     [openPanel setCanChooseDirectories:NO];
     [openPanel setAllowsMultipleSelection:NO];
@@ -418,14 +420,23 @@ void NSRunApplication(void) {
 }
 
 void NSEvaluateJavaScript(const char* script) {
-    if (webView != nil) {
-        NSString *jsString = [NSString stringWithUTF8String:script];
+    if (script == NULL) {
+        return;
+    }
+    NSString *jsString = [NSString stringWithUTF8String:script];
+    if (jsString == nil) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (webView == nil) {
+            return;
+        }
         [webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
             if (error) {
                 NSLog(@"Error evaluating JavaScript: %@", error);
             }
         }];
-    }
+    });
 }
 
 void NSShowOpenFileDialog(void) {
@@ -455,10 +466,35 @@ void NSShowOpenFileDialog(void) {
                 NSString *path = selectedFile.path;
                 NSLog(@"Selected file: %@", path);
                 
-                // Create a JSON message with the file path
-                NSString *jsonMsg = 
-                [NSString stringWithFormat:
-                @"{\"type\":\"native_file_selected\",\"path\":\"%@\"}", path];
+                NSDictionary *message = @{@"type": @"native_file_selected", @"path": path};
+                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:message options:0 error:nil];
+                NSString *jsonMsg = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+                onJavaScriptMessage([jsonMsg UTF8String]);
+            }
+        }];
+    });
+}
+
+void NSShowSaveFileDialog(void) {
+    NSLog(@"Showing save file dialog");
+    if (isShowingFileDialog || savePanel == nil || webView == nil) {
+        return;
+    }
+
+    NSWindow *window = [webView window];
+    if (window == nil) {
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        isShowingFileDialog = YES;
+        [savePanel beginSheetModalForWindow:window completionHandler:^(NSModalResponse result) {
+            isShowingFileDialog = NO;
+            if (result == NSModalResponseOK) {
+                NSString *path = savePanel.URL.path;
+                NSDictionary *message = @{@"type": @"native_file_destination", @"path": path};
+                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:message options:0 error:nil];
+                NSString *jsonMsg = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
                 onJavaScriptMessage([jsonMsg UTF8String]);
             }
         }];
