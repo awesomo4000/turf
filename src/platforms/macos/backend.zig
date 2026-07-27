@@ -2,7 +2,7 @@
 // Copyright (c) 2025-2026 awesomo4000
 
 const std = @import("std");
-const common = @import("../../common.zig");
+const common = @import("common");
 
 // External Cocoa bridge functions declared in cocoa_bridge.m
 extern fn NSApplicationLoad() bool;
@@ -20,6 +20,7 @@ extern fn NSLoadLocalFile(path: [*:0]const u8) void;
 extern fn NSLoadString(html_content: [*:0]const u8) void;
 extern fn NSEvaluateJavaScript(script: [*:0]const u8) void;
 extern fn NSShowOpenFileDialog() void;
+extern fn NSShowSaveFileDialog() void;
 
 // Global reference to the platform window for message handling
 var global_platform_window: ?*PlatformWindow = null;
@@ -38,6 +39,10 @@ pub export fn onJavaScriptMessage(message: [*c]const u8) void {
 }
 
 fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
+    if (window.message_handler) |handler| {
+        handler.dispatch(msg);
+    }
+
     const allocator = window.allocator;
 
     // Parse JSON
@@ -57,6 +62,15 @@ fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
     const msg_type = parsed.value.type;
 
     // Handle different message types
+    if (std.mem.eql(u8, msg_type, "show_file_dialog")) {
+        NSShowOpenFileDialog();
+        return;
+    }
+    if (std.mem.eql(u8, msg_type, "show_save_dialog")) {
+        NSShowSaveFileDialog();
+        return;
+    }
+
     if (std.mem.eql(u8, msg_type, "ping")) {
         // Send pong response - match Linux format
         const pong_str = try std.fmt.allocPrint(allocator, "{{\"message\":\"PONG from native!\",\"timestamp\":{d}}}", .{std.Io.Clock.real.now(std.Options.debug_io).toSeconds()});
@@ -95,7 +109,7 @@ fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
 
 // Window geometry event callback
 pub export fn onWindowGeometryEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
-    std.debug.print("Window geometry changed: x={}, y={}, w={}, h={}\n", .{ x, y, width, height });
+    _ = .{ x, y, width, height };
 }
 
 // Platform implementation
@@ -105,6 +119,8 @@ pub const PlatformWindow = struct {
     is_window_created: bool = false,
     message_queue: *common.MessageQueue,
     prng: std.Random.DefaultPrng,
+    message_handler: ?common.MessageHandler = null,
+    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 
     pub fn init(allocator: std.mem.Allocator, config: common.WindowConfig, message_queue: *common.MessageQueue) !PlatformWindow {
         // Initialize the Cocoa application
@@ -120,9 +136,14 @@ pub const PlatformWindow = struct {
             .prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(std.Options.debug_io).toNanoseconds())),
         };
     }
+    pub fn setMessageHandler(self: *PlatformWindow, handler: ?common.MessageHandler) void {
+        self.message_handler = handler;
+    }
+
 
     pub fn deinit(self: *PlatformWindow) void {
-        _ = self;
+        self.running.store(false, .seq_cst);
+        if (global_platform_window == self) global_platform_window = null;
     }
 
     pub fn createWindow(self: *PlatformWindow, config: common.WindowConfig, turf_js: []const u8) void {
@@ -172,16 +193,21 @@ pub const PlatformWindow = struct {
 
         // Run the native application
         NSRunApplication();
+        self.running.store(false, .seq_cst);
 
         thread.join();
     }
 
     fn messageProcessingThread(self: *PlatformWindow) void {
-        while (true) {
+        while (self.running.load(.seq_cst)) {
             std.Io.sleep(std.Options.debug_io, .fromMilliseconds(16), .awake) catch return; // 60Hz
 
             var messages = self.message_queue.popAll() catch continue;
             defer messages.deinit(self.allocator);
+            defer for (messages.items) |message| {
+                self.allocator.free(message.type);
+                self.allocator.free(message.data);
+            };
 
             if (messages.items.len > 0) {
                 self.sendMessagesToJS(messages.items) catch |err| {
@@ -208,7 +234,7 @@ pub const PlatformWindow = struct {
         }
         try writer.writeAll(");");
 
-        const js_code = try arena_allocator.dupeZ(u8, js_array.written());
+        const js_code = try arena_allocator.dupeSentinel(u8, js_array.written(), 0);
         std.debug.print("macOS: Sending JS: {s}\n", .{js_code});
         self.evalJS(js_code);
     }

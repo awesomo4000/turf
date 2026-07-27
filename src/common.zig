@@ -23,6 +23,16 @@ pub const Message = struct {
     data: [:0]const u8,  // Null-terminated for C API
 };
 
+// A borrowed inbound JSON message. The callback must copy data it retains.
+pub const MessageHandler = struct {
+    context: ?*anyopaque = null,
+    callback: *const fn (context: ?*anyopaque, message: []const u8) void,
+
+    pub fn dispatch(self: MessageHandler, message: []const u8) void {
+        self.callback(self.context, message);
+    }
+};
+
 // Thread-safe message queue for outgoing messages (native -> JS)
 pub const MessageQueue = struct {
     allocator: std.mem.Allocator,
@@ -65,7 +75,7 @@ pub const MessageQueue = struct {
         
         try self.messages.append(self.allocator, .{
             .type = try self.allocator.dupe(u8, msg_type),
-            .data = try self.allocator.dupeZ(u8, data),
+            .data = try self.allocator.dupeSentinel(u8, data, 0),
         });
     }
     
@@ -79,3 +89,26 @@ pub const MessageQueue = struct {
         return result;
     }
 };
+
+test "message handler forwards raw application payload" {
+    const Capture = struct {
+        received: ?[]const u8 = null,
+
+        fn onMessage(context: ?*anyopaque, message: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.received = message;
+        }
+    };
+
+    var capture = Capture{};
+    const handler = MessageHandler{
+        .context = &capture,
+        .callback = Capture.onMessage,
+    };
+
+    handler.dispatch("{\"type\":\"farmhand.request\",\"id\":\"42\"}");
+    try std.testing.expectEqualStrings(
+        "{\"type\":\"farmhand.request\",\"id\":\"42\"}",
+        capture.received.?,
+    );
+}
