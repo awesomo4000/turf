@@ -31,6 +31,7 @@ static WKWebView *webView = nil;
 static NSOpenPanel *openPanel = nil;
 static NSSavePanel *savePanel = nil;
 static BOOL isShowingFileDialog = NO;
+static NSString *lastHTMLString = nil;
 
 // Custom WebView class to suppress beeps
 @interface TurfWebView : WKWebView
@@ -123,6 +124,18 @@ static BOOL isShowingFileDialog = NO;
     }
     
     return NO;
+}
+
+- (void)reload {
+    if (lastHTMLString != nil) {
+        [self loadHTMLString:lastHTMLString baseURL:nil];
+        return;
+    }
+    [super reload];
+}
+
+- (void)reloadFromOrigin {
+    [self reload];
 }
 
 // Override noResponderFor to prevent beeps
@@ -309,7 +322,8 @@ void NSLoadLocalFile(const char* path) {
 void NSLoadString(const char* html_content) {
     if (webView != nil) {
         NSString *htmlString = [NSString stringWithUTF8String:html_content];
-        [webView loadHTMLString:htmlString baseURL:nil];
+        lastHTMLString = [htmlString copy];
+        [webView loadHTMLString:lastHTMLString baseURL:nil];
     }
 }
 
