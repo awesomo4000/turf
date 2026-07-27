@@ -96,6 +96,10 @@ static NSString *lastHTMLString = nil;
     // Handle zoom shortcuts
     if ([event modifierFlags] & NSEventModifierFlagCommand) {
         NSString *chars = [event charactersIgnoringModifiers];
+        if ([chars isEqualToString:@"r"] || [chars isEqualToString:@"R"]) {
+            [self reload];
+            return YES;
+        }
         
         // Cmd+= (zoom in)
         if ([chars isEqualToString:@"="] || [chars isEqualToString:@"+"]) {
@@ -135,6 +139,14 @@ static NSString *lastHTMLString = nil;
 }
 
 - (void)reloadFromOrigin {
+    [self reload];
+}
+
+- (IBAction)reload:(id)sender {
+    [self reload];
+}
+
+- (IBAction)reloadFromOrigin:(id)sender {
     [self reload];
 }
 
@@ -200,6 +212,16 @@ static NSString *lastHTMLString = nil;
         return YES;
     }
     return [super performKeyEquivalent:event];
+}
+
+- (IBAction)reload:(id)sender {
+    if (webView != nil && [webView isKindOfClass:[TurfWebView class]]) {
+        [(TurfWebView *)webView reload];
+    }
+}
+
+- (IBAction)reloadFromOrigin:(id)sender {
+    [self reload:sender];
 }
 @end
 
