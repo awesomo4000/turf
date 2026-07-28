@@ -520,7 +520,8 @@ bool NSEvaluateJavaScriptForGeneration(const char* script, unsigned long long ge
             return;
         }
         [webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
-            delivered = error == nil && [result respondsToSelector:@selector(boolValue)] && [result boolValue];
+            delivered = error == nil && generation == webViewNavigationGeneration &&
+                        [result respondsToSelector:@selector(boolValue)] && [result boolValue];
             dispatch_semaphore_signal(completion);
         }];
     });

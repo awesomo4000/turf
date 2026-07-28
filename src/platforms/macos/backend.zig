@@ -215,6 +215,8 @@ pub const PlatformWindow = struct {
 
     fn messageProcessingThread(self: *PlatformWindow) void {
         var pending: ?std.ArrayList(common.Message) = null;
+        var pending_batch_id: u64 = 0;
+        var next_batch_id: u64 = 1;
         defer if (pending) |*batch| self.freeMessageBatch(batch);
 
         while (self.running.load(.seq_cst)) {
@@ -228,11 +230,13 @@ pub const PlatformWindow = struct {
                     continue;
                 }
                 pending = messages;
+                pending_batch_id = next_batch_id;
+                next_batch_id +%= 1;
             }
 
             if (self.delivery_suspended.load(.seq_cst)) continue;
             const generation = self.delivery_generation.load(.seq_cst);
-            const delivered = self.sendMessagesToJS(pending.?.items, generation) catch |err| failed: {
+            const delivered = self.sendMessagesToJS(pending.?.items, generation, pending_batch_id) catch |err| failed: {
                 std.debug.print("Error sending messages: {}\n", .{err});
                 break :failed false;
             };
@@ -240,6 +244,7 @@ pub const PlatformWindow = struct {
 
             if (pending) |*batch| self.freeMessageBatch(batch);
             pending = null;
+            pending_batch_id = 0;
         }
     }
 
@@ -255,6 +260,7 @@ pub const PlatformWindow = struct {
         self: *PlatformWindow,
         messages: []const common.Message,
         generation: c_ulonglong,
+        batch_id: u64,
     ) !bool {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -264,12 +270,12 @@ pub const PlatformWindow = struct {
         defer js_array.deinit();
         const writer = &js_array.writer;
 
-        try writer.writeAll("(() => { if (!window.turf || !window.turf._handleNativeMessage) return false; const messages = [");
+        try writer.print("(() => {{ const batchId = '{d}'; const delivered = window.__turf_delivered_batches || (window.__turf_delivered_batches = new Set()); if (delivered.has(batchId)) return true; if (!window.turf || !window.turf._handleNativeMessage) return false; const messages = [", .{batch_id});
         for (messages, 0..) |msg, i| {
             if (i > 0) try writer.writeAll(",");
             try writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data });
         }
-        try writer.writeAll("]; for (const message of messages) window.turf._handleNativeMessage(message); return true; })()");
+        try writer.writeAll("]; for (const message of messages) window.turf._handleNativeMessage(message); delivered.add(batchId); return true; })()");
 
         const js_code = try arena_allocator.dupeSentinel(u8, js_array.written(), 0);
         return NSEvaluateJavaScriptForGeneration(js_code, generation);
