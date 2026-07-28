@@ -38,6 +38,12 @@ pub export fn onJavaScriptMessage(message: [*c]const u8) void {
     }
 }
 
+pub export fn onWebViewNavigationStarted() void {
+    const window = global_platform_window orelse return;
+    const handler = window.message_handler orelse return;
+    handler.dispatch("{\"type\":\"turf.navigation_started\"}");
+}
+
 fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
     if (window.message_handler) |handler| {
         handler.dispatch(msg);

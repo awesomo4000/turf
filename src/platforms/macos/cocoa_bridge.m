@@ -9,6 +9,7 @@
 extern void onWindowEvent(int x, int y, int width, int height);
 extern void onWindowGeometryEvent(int x, int y, int width, int height);
 extern void onJavaScriptMessage(const char* message);
+extern void onWebViewNavigationStarted(void);
 
 
 // AppDelegate is the main app delegate that handles the app lifecycle
@@ -101,6 +102,11 @@ static TurfURLSchemeHandler *appSchemeHandler = nil;
     completionHandler();
 }
 
+
+- (void)webView:(WKWebView *)webView
+        didStartProvisionalNavigation:(WKNavigation *)navigation {
+    onWebViewNavigationStarted();
+}
 
 // Navigation delegate methods to persist zoom across reloads
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
