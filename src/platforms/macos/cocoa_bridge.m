@@ -163,6 +163,11 @@ static NSString *lastHTMLString = nil;
     return menu;
 }
 
+- (void)rightMouseDown:(NSEvent *)event {
+    NSMenu *menu = [self menuForEvent:event];
+    [NSMenu popUpContextMenu:menu withEvent:event forView:self];
+}
+
 // Override noResponderFor to prevent beeps
 - (void)noResponderFor:(SEL)eventSelector {
     // Do nothing - prevents the beep
