@@ -160,36 +160,34 @@ static NSURL *FarmhandAppBaseURL(void) {
     [self reload];
 }
 
-- (IBAction)inspectElement:(id)sender {
-    SEL selector = NSSelectorFromString(@"_showInspector");
-    if ([self respondsToSelector:selector]) {
-        typedef void (*InspectorFunction)(id, SEL);
-        InspectorFunction function = (InspectorFunction)[self methodForSelector:selector];
-        function(self, selector);
+- (void)routeReloadItemsInMenu:(NSMenu *)menu {
+    for (NSMenuItem *item in [menu itemArray]) {
+        NSString *actionName = item.action ? NSStringFromSelector(item.action) : @"";
+        if ([[item title] isEqualToString:@"Reload"] || [actionName localizedCaseInsensitiveContainsString:@"reload"]) {
+            [item setTarget:self];
+            [item setAction:@selector(reload:)];
+        }
+        if (item.submenu != nil) {
+            [self routeReloadItemsInMenu:item.submenu];
+        }
     }
 }
 
 - (NSMenu *)menuForEvent:(NSEvent *)event {
-    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
-    NSMenuItem *reloadItem = [[NSMenuItem alloc]
-        initWithTitle:@"Reload"
-        action:@selector(reload:)
-        keyEquivalent:@""];
-    [reloadItem setTarget:self];
-    [menu addItem:reloadItem];
-    [menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *inspectItem = [[NSMenuItem alloc]
-        initWithTitle:@"Inspect Element"
-        action:NSSelectorFromString(@"inspectElement:")
-        keyEquivalent:@""];
-    [inspectItem setTarget:self];
-    [menu addItem:inspectItem];
+    NSMenu *menu = [super menuForEvent:event];
+    if (menu != nil) {
+        [self routeReloadItemsInMenu:menu];
+    }
     return menu;
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
     NSMenu *menu = [self menuForEvent:event];
-    [NSMenu popUpContextMenu:menu withEvent:event forView:self];
+    if (menu != nil) {
+        [NSMenu popUpContextMenu:menu withEvent:event forView:self];
+        return;
+    }
+    [super rightMouseDown:event];
 }
 
 // Override noResponderFor to prevent beeps
