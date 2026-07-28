@@ -181,14 +181,6 @@ static NSURL *FarmhandAppBaseURL(void) {
     return menu;
 }
 
-- (void)rightMouseDown:(NSEvent *)event {
-    NSMenu *menu = [self menuForEvent:event];
-    if (menu != nil) {
-        [NSMenu popUpContextMenu:menu withEvent:event forView:self];
-        return;
-    }
-    [super rightMouseDown:event];
-}
 
 // Override noResponderFor to prevent beeps
 - (void)noResponderFor:(SEL)eventSelector {
