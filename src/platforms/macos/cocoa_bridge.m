@@ -160,6 +160,15 @@ static NSURL *FarmhandAppBaseURL(void) {
     [self reload];
 }
 
+- (IBAction)inspectElement:(id)sender {
+    SEL selector = NSSelectorFromString(@"_showInspector");
+    if ([self respondsToSelector:selector]) {
+        typedef void (*InspectorFunction)(id, SEL);
+        InspectorFunction function = (InspectorFunction)[self methodForSelector:selector];
+        function(self, selector);
+    }
+}
+
 - (NSMenu *)menuForEvent:(NSEvent *)event {
     NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
     NSMenuItem *reloadItem = [[NSMenuItem alloc]
@@ -456,6 +465,12 @@ void NSCreateWindow(int x, int y, int w, int h,
     [scrollView setMagnification:1.0];
     
     // Enable layer backing for the WebView
+    SEL setInspectableSelector = NSSelectorFromString(@"setInspectable:");
+    if ([webView respondsToSelector:setInspectableSelector]) {
+        typedef void (*SetInspectableFunction)(id, SEL, BOOL);
+        SetInspectableFunction function = (SetInspectableFunction)[webView methodForSelector:setInspectableSelector];
+        function(webView, setInspectableSelector, YES);
+    }
     [webView setWantsLayer:YES];
     webView.layer.contentsScale = window.backingScaleFactor;
     
