@@ -66,6 +66,7 @@ static NSString *lastHTMLString = nil;
     completionHandler();
 }
 
+
 // Navigation delegate methods to persist zoom across reloads
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     // Reapply zoom level after page load
@@ -130,16 +131,17 @@ static NSString *lastHTMLString = nil;
     return NO;
 }
 
-- (void)reload {
+- (WKNavigation *)reload {
     if (lastHTMLString != nil) {
         [self loadHTMLString:lastHTMLString baseURL:nil];
-        return;
+        return nil;
     }
-    [super reload];
+    return [super reload];
 }
 
-- (void)reloadFromOrigin {
+- (WKNavigation *)reloadFromOrigin {
     [self reload];
+    return nil;
 }
 
 - (IBAction)reload:(id)sender {
