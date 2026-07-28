@@ -31,15 +31,42 @@ static WKWebView *webView = nil;
 static NSOpenPanel *openPanel = nil;
 static NSSavePanel *savePanel = nil;
 static BOOL isShowingFileDialog = NO;
-static NSString *lastHTMLString = nil;
-static NSURL *appBaseURL = nil;
+@interface TurfURLSchemeHandler : NSObject <WKURLSchemeHandler>
+@property (nonatomic, copy) NSData *htmlData;
+@end
 
-static NSURL *FarmhandAppBaseURL(void) {
-    if (appBaseURL == nil) {
-        appBaseURL = [NSURL URLWithString:@"https://farmhand.local/"];
+@implementation TurfURLSchemeHandler
+- (void)webView:(WKWebView *)webView
+        startURLSchemeTask:(id<WKURLSchemeTask>)urlSchemeTask {
+    NSURL *url = urlSchemeTask.request.URL;
+    BOOL allowedPath = [url.path isEqualToString:@"/"] ||
+                       [url.path isEqualToString:@"/index.html"];
+    if (self.htmlData == nil ||
+        ![url.host isEqualToString:@"localhost"] ||
+        !allowedPath) {
+        NSError *error = [NSError errorWithDomain:NSURLErrorDomain
+                                             code:NSURLErrorFileDoesNotExist
+                                         userInfo:nil];
+        [urlSchemeTask didFailWithError:error];
+        return;
     }
-    return appBaseURL;
+
+    NSURLResponse *response = [[NSURLResponse alloc]
+        initWithURL:url
+        MIMEType:@"text/html"
+        expectedContentLength:self.htmlData.length
+        textEncodingName:@"utf-8"];
+    [urlSchemeTask didReceiveResponse:response];
+    [urlSchemeTask didReceiveData:self.htmlData];
+    [urlSchemeTask didFinish];
 }
+
+- (void)webView:(WKWebView *)webView
+        stopURLSchemeTask:(id<WKURLSchemeTask>)urlSchemeTask {
+}
+@end
+
+static TurfURLSchemeHandler *appSchemeHandler = nil;
 
 // Custom WebView class to suppress beeps
 @interface TurfWebView : WKWebView
@@ -139,49 +166,6 @@ static NSURL *FarmhandAppBaseURL(void) {
     return NO;
 }
 
-- (WKNavigation *)reload {
-    if (lastHTMLString != nil) {
-        [self loadHTMLString:lastHTMLString baseURL:FarmhandAppBaseURL()];
-        return nil;
-    }
-    return [super reload];
-}
-
-- (WKNavigation *)reloadFromOrigin {
-    [self reload];
-    return nil;
-}
-
-- (IBAction)reload:(id)sender {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self reload];
-    });
-}
-
-- (IBAction)reloadFromOrigin:(id)sender {
-    [self reload:sender];
-}
-
-- (void)routeReloadItemsInMenu:(NSMenu *)menu {
-    for (NSMenuItem *item in [menu itemArray]) {
-        NSString *actionName = item.action ? NSStringFromSelector(item.action) : @"";
-        if ([[item title] isEqualToString:@"Reload"] || [actionName localizedCaseInsensitiveContainsString:@"reload"]) {
-            [item setTarget:self];
-            [item setAction:@selector(reload:)];
-        }
-        if (item.submenu != nil) {
-            [self routeReloadItemsInMenu:item.submenu];
-        }
-    }
-}
-
-- (NSMenu *)menuForEvent:(NSEvent *)event {
-    NSMenu *menu = [super menuForEvent:event];
-    if (menu != nil) {
-        [self routeReloadItemsInMenu:menu];
-    }
-    return menu;
-}
 
 
 // Override noResponderFor to prevent beeps
@@ -248,17 +232,6 @@ static NSURL *FarmhandAppBaseURL(void) {
     return [super performKeyEquivalent:event];
 }
 
-- (IBAction)reload:(id)sender {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (webView != nil && [webView isKindOfClass:[TurfWebView class]]) {
-            [(TurfWebView *)webView reload];
-        }
-    });
-}
-
-- (IBAction)reloadFromOrigin:(id)sender {
-    [self reload:sender];
-}
 @end
 
 @interface WindowDelegate : NSObject <NSWindowDelegate>
@@ -378,11 +351,14 @@ void NSLoadLocalFile(const char* path) {
 
 
 void NSLoadString(const char* html_content) {
-    if (webView != nil) {
-        NSString *htmlString = [NSString stringWithUTF8String:html_content];
-        lastHTMLString = [htmlString copy];
-        [webView loadHTMLString:lastHTMLString baseURL:FarmhandAppBaseURL()];
+    if (webView == nil || appSchemeHandler == nil || html_content == NULL) {
+        return;
     }
+
+    NSString *htmlString = [NSString stringWithUTF8String:html_content];
+    appSchemeHandler.htmlData = [htmlString dataUsingEncoding:NSUTF8StringEncoding];
+    NSURL *url = [NSURL URLWithString:@"turf://localhost/index.html"];
+    [webView loadRequest:[NSURLRequest requestWithURL:url]];
 }
 
 void NSCreateWindow(int x, int y, int w, int h, 
@@ -405,6 +381,8 @@ void NSCreateWindow(int x, int y, int w, int h,
 
     // Create and configure WebView
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+    appSchemeHandler = [[TurfURLSchemeHandler alloc] init];
+    [config setURLSchemeHandler:appSchemeHandler forURLScheme:@"turf"];
     
     // Enable developer extras directly in configuration
     config.preferences.javaScriptCanOpenWindowsAutomatically = YES;
