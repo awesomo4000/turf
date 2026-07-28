@@ -22,6 +22,16 @@ JavaScript can construct `MouseEvent` or call `dispatchEvent`, but those events 
 
 Public `WKWebView` APIs are enough to load pages, evaluate JavaScript, and take view-local snapshots. They do not provide trusted offscreen mouse movement. A test for the pointer pipeline must inject an AppKit event through WebKit rather than merely invoke a DOM listener.
 
+## Choosing native or DOM testing
+
+The native harness and DOM interaction tests cover different failure classes. Keep both.
+
+Use this harness for AppKit/WebKit event routing, native context menus, reload lifecycle, pointer state, and UI-thread liveness. The native Reload path exposed an earlier architecture defect that left the UI hung. A DOM `click()` or dispatched event would not have crossed that native path and could not have detected the failure.
+
+For ordinary application behavior after native plumbing is known-good, prefer DOM interaction. DOM tests are the practical default for controls, rendering, state transitions, validation, and bridge messages. They are faster and less coupled to private WebKit SPI.
+
+Neither approach requires foreground OS automation. Do not use `osascript`, activate the tested application, or move the workstation pointer from tests.
+
 ## How the offscreen host window works
 
 The sample uses a borderless `NSWindow` located at `(-10000, -10000)`. Its test subclass reports itself as key within the process and posts the corresponding notification, matching the basic approach used by WebKit's own API tests.
@@ -29,7 +39,7 @@ The sample uses a borderless `NSWindow` located at `(-10000, -10000)`. Its test 
 The process uses `NSApplicationActivationPolicyProhibited`. It does not:
 
 - activate the application;
-- run AppleScript;
+- run `osascript` or other AppleScript;
 - move or click the workstation pointer;
 - post `CGEvent` input;
 - capture the screen.
