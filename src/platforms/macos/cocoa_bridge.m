@@ -150,6 +150,17 @@ static NSString *lastHTMLString = nil;
     [self reload];
 }
 
+- (NSMenu *)menuForEvent:(NSEvent *)event {
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem *reloadItem = [[NSMenuItem alloc]
+        initWithTitle:@"Reload"
+        action:@selector(reload:)
+        keyEquivalent:@""];
+    [reloadItem setTarget:self];
+    [menu addItem:reloadItem];
+    return menu;
+}
+
 // Override noResponderFor to prevent beeps
 - (void)noResponderFor:(SEL)eventSelector {
     // Do nothing - prevents the beep
