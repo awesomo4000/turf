@@ -253,6 +253,31 @@ pub fn build(b: *std.Build) void {
     const tests_step = b.step("test", "Run unit tests");
     tests_step.dependOn(&run_lib_unit_tests.step);
     tests_step.dependOn(&run_exe_unit_tests.step);
+
+    if (target_os == .macos) {
+        const ui_test_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        });
+        ui_test_module.addCSourceFile(.{
+            .file = b.path("tests/ui/macos/reload_hover_test.m"),
+            .flags = &.{ "-fobjc-arc", "-fblocks" },
+        });
+        ui_test_module.linkFramework("Cocoa", .{});
+        ui_test_module.linkFramework("WebKit", .{});
+        ui_test_module.link_libc = true;
+
+        const ui_test = b.addExecutable(.{
+            .name = "turf-macos-ui-test",
+            .root_module = ui_test_module,
+        });
+        const run_ui_test = b.addRunArtifact(ui_test);
+        const ui_test_step = b.step(
+            "test-ui-macos",
+            "Run the offscreen macOS WebKit UI testing sample",
+        );
+        ui_test_step.dependOn(&run_ui_test.step);
+    }
 }
 
 // Add Cocoa and WebKit frameworks and compile Objective-C file
