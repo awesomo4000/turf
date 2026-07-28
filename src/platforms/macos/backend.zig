@@ -19,6 +19,7 @@ extern fn NSLoadURL(url: [*:0]const u8) void;
 extern fn NSLoadLocalFile(path: [*:0]const u8) void;
 extern fn NSLoadString(html_content: [*:0]const u8) void;
 extern fn NSEvaluateJavaScript(script: [*:0]const u8) void;
+extern fn NSEvaluateJavaScriptForGeneration(script: [*:0]const u8, generation: c_ulonglong) bool;
 extern fn NSShowOpenFileDialog() void;
 extern fn NSShowSaveFileDialog() void;
 
@@ -38,8 +39,10 @@ pub export fn onJavaScriptMessage(message: [*c]const u8) void {
     }
 }
 
-pub export fn onWebViewNavigationStarted() void {
+pub export fn onWebViewNavigationStarted(generation: c_ulonglong) void {
     const window = global_platform_window orelse return;
+    window.delivery_generation.store(generation, .seq_cst);
+    window.delivery_suspended.store(true, .seq_cst);
     const handler = window.message_handler orelse return;
     handler.dispatch("{\"type\":\"turf.navigation_started\"}");
 }
@@ -66,6 +69,10 @@ fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
     defer parsed.deinit();
 
     const msg_type = parsed.value.type;
+    if (std.mem.eql(u8, msg_type, "turf_ready")) {
+        window.delivery_suspended.store(false, .seq_cst);
+        return;
+    }
 
     // Handle different message types
     if (std.mem.eql(u8, msg_type, "show_file_dialog")) {
@@ -127,6 +134,8 @@ pub const PlatformWindow = struct {
     prng: std.Random.DefaultPrng,
     message_handler: ?common.MessageHandler = null,
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    delivery_generation: std.atomic.Value(c_ulonglong) = std.atomic.Value(c_ulonglong).init(0),
+    delivery_suspended: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
 
     pub fn init(allocator: std.mem.Allocator, config: common.WindowConfig, message_queue: *common.MessageQueue) !PlatformWindow {
         // Initialize the Cocoa application
@@ -205,25 +214,48 @@ pub const PlatformWindow = struct {
     }
 
     fn messageProcessingThread(self: *PlatformWindow) void {
+        var pending: ?std.ArrayList(common.Message) = null;
+        defer if (pending) |*batch| self.freeMessageBatch(batch);
+
         while (self.running.load(.seq_cst)) {
-            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(16), .awake) catch return; // 60Hz
+            std.Io.sleep(std.Options.debug_io, .fromMilliseconds(16), .awake) catch return;
 
-            var messages = self.message_queue.popAll() catch continue;
-            defer messages.deinit(self.allocator);
-            defer for (messages.items) |message| {
-                self.allocator.free(message.type);
-                self.allocator.free(message.data);
-            };
-
-            if (messages.items.len > 0) {
-                self.sendMessagesToJS(messages.items) catch |err| {
-                    std.debug.print("Error sending messages: {}\n", .{err});
-                };
+            if (self.delivery_suspended.load(.seq_cst)) continue;
+            if (pending == null) {
+                var messages = self.message_queue.popAll() catch continue;
+                if (messages.items.len == 0) {
+                    messages.deinit(self.allocator);
+                    continue;
+                }
+                pending = messages;
             }
+
+            if (self.delivery_suspended.load(.seq_cst)) continue;
+            const generation = self.delivery_generation.load(.seq_cst);
+            const delivered = self.sendMessagesToJS(pending.?.items, generation) catch |err| failed: {
+                std.debug.print("Error sending messages: {}\n", .{err});
+                break :failed false;
+            };
+            if (!delivered) continue;
+
+            if (pending) |*batch| self.freeMessageBatch(batch);
+            pending = null;
         }
     }
 
-    fn sendMessagesToJS(self: *PlatformWindow, messages: []const common.Message) !void {
+    fn freeMessageBatch(self: *PlatformWindow, messages: *std.ArrayList(common.Message)) void {
+        for (messages.items) |message| {
+            self.allocator.free(message.type);
+            self.allocator.free(message.data);
+        }
+        messages.deinit(self.allocator);
+    }
+
+    fn sendMessagesToJS(
+        self: *PlatformWindow,
+        messages: []const common.Message,
+        generation: c_ulonglong,
+    ) !bool {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_allocator = arena.allocator();
@@ -232,16 +264,14 @@ pub const PlatformWindow = struct {
         defer js_array.deinit();
         const writer = &js_array.writer;
 
-        // Use the same polling mechanism as Linux
-        try writer.writeAll("window.__turf_message_queue.push(");
+        try writer.writeAll("(() => { if (!window.turf || !window.turf._handleNativeMessage) return false; const messages = [");
         for (messages, 0..) |msg, i| {
             if (i > 0) try writer.writeAll(",");
             try writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data });
         }
-        try writer.writeAll(");");
+        try writer.writeAll("]; for (const message of messages) window.turf._handleNativeMessage(message); return true; })()");
 
         const js_code = try arena_allocator.dupeSentinel(u8, js_array.written(), 0);
-        std.debug.print("macOS: Sending JS: {s}\n", .{js_code});
-        self.evalJS(js_code);
+        return NSEvaluateJavaScriptForGeneration(js_code, generation);
     }
 };

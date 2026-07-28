@@ -7,6 +7,7 @@
 (function() {
     // Registry dictionary to store the handlers for messages
     const registry = {};
+    const pendingMessages = [];
 
     // Send a message to the native application
     function send(message) {
@@ -37,17 +38,45 @@
         }
     }
 
+    function dispatchNativeMessage(msg) {
+        if (msg.type && registry[msg.type]) {
+            registry[msg.type](msg.data);
+            return true;
+        }
+        if (registry['native_message']) {
+            registry['native_message'](msg);
+            return true;
+        }
+        return false;
+    }
+
+    function flushPendingMessages() {
+        let retained = 0;
+        for (const message of pendingMessages) {
+            if (!dispatchNativeMessage(message)) {
+                pendingMessages[retained] = message;
+                retained += 1;
+            }
+        }
+        pendingMessages.length = retained;
+    }
+
+    function registerHandler(messageType, handlerFunction) {
+        registry[messageType] = handlerFunction;
+        flushPendingMessages();
+    }
+
     // User can register handlers for events from the native app
     function onWindowGeometryChanged(handler_function) {
-        registry['window_geometry'] = handler_function;
+        registerHandler('window_geometry', handler_function);
     }
 
     function onFileSelected(handler_function) {
-        registry['file_selected'] = handler_function;
+        registerHandler('file_selected', handler_function);
     }
 
     function onMessage(message_type, handler_function) {
-        registry[message_type] = handler_function;
+        registerHandler(message_type, handler_function);
     }
 
     function nativeFileSelect() {
@@ -68,12 +97,8 @@
     function handleNativeMessage(msg) {
         console.log('Native message received:', msg);
         
-        // Call registered handlers based on message type
-        if (msg.type && registry[msg.type]) {
-            registry[msg.type](msg.data);
-        } else if (registry['native_message']) {
-            // Fallback to generic handler
-            registry['native_message'](msg);
+        if (!dispatchNativeMessage(msg)) {
+            pendingMessages.push(msg);
         }
     }
 

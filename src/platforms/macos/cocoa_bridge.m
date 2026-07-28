@@ -9,7 +9,7 @@
 extern void onWindowEvent(int x, int y, int width, int height);
 extern void onWindowGeometryEvent(int x, int y, int width, int height);
 extern void onJavaScriptMessage(const char* message);
-extern void onWebViewNavigationStarted(void);
+extern void onWebViewNavigationStarted(unsigned long long generation);
 
 
 // AppDelegate is the main app delegate that handles the app lifecycle
@@ -68,6 +68,7 @@ static BOOL isShowingFileDialog = NO;
 @end
 
 static TurfURLSchemeHandler *appSchemeHandler = nil;
+static unsigned long long webViewNavigationGeneration = 0;
 
 // Custom WebView class to suppress beeps
 @interface TurfWebView : WKWebView
@@ -105,7 +106,8 @@ static TurfURLSchemeHandler *appSchemeHandler = nil;
 
 - (void)webView:(WKWebView *)webView
         didStartProvisionalNavigation:(WKNavigation *)navigation {
-    onWebViewNavigationStarted();
+    webViewNavigationGeneration += 1;
+    onWebViewNavigationStarted(webViewNavigationGeneration);
 }
 
 // Navigation delegate methods to persist zoom across reloads
@@ -499,6 +501,32 @@ void NSEvaluateJavaScript(const char* script) {
             }
         }];
     });
+}
+
+bool NSEvaluateJavaScriptForGeneration(const char* script, unsigned long long generation) {
+    if (script == NULL) {
+        return false;
+    }
+    NSString *jsString = [NSString stringWithUTF8String:script];
+    if (jsString == nil) {
+        return false;
+    }
+
+    __block BOOL delivered = NO;
+    dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (webView == nil || generation != webViewNavigationGeneration) {
+            dispatch_semaphore_signal(completion);
+            return;
+        }
+        [webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
+            delivered = error == nil && [result respondsToSelector:@selector(boolValue)] && [result boolValue];
+            dispatch_semaphore_signal(completion);
+        }];
+    });
+
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
+    return dispatch_semaphore_wait(completion, timeout) == 0 && delivered;
 }
 
 void NSShowOpenFileDialog(void) {
