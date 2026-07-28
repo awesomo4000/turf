@@ -32,6 +32,14 @@ static NSOpenPanel *openPanel = nil;
 static NSSavePanel *savePanel = nil;
 static BOOL isShowingFileDialog = NO;
 static NSString *lastHTMLString = nil;
+static NSURL *appBaseURL = nil;
+
+static NSURL *FarmhandAppBaseURL(void) {
+    if (appBaseURL == nil) {
+        appBaseURL = [NSURL URLWithString:@"https://farmhand.local/"];
+    }
+    return appBaseURL;
+}
 
 // Custom WebView class to suppress beeps
 @interface TurfWebView : WKWebView
@@ -133,7 +141,7 @@ static NSString *lastHTMLString = nil;
 
 - (WKNavigation *)reload {
     if (lastHTMLString != nil) {
-        [self loadHTMLString:lastHTMLString baseURL:nil];
+        [self loadHTMLString:lastHTMLString baseURL:FarmhandAppBaseURL()];
         return nil;
     }
     return [super reload];
@@ -160,6 +168,13 @@ static NSString *lastHTMLString = nil;
         keyEquivalent:@""];
     [reloadItem setTarget:self];
     [menu addItem:reloadItem];
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *inspectItem = [[NSMenuItem alloc]
+        initWithTitle:@"Inspect Element"
+        action:NSSelectorFromString(@"inspectElement:")
+        keyEquivalent:@""];
+    [inspectItem setTarget:self];
+    [menu addItem:inspectItem];
     return menu;
 }
 
@@ -363,7 +378,7 @@ void NSLoadString(const char* html_content) {
     if (webView != nil) {
         NSString *htmlString = [NSString stringWithUTF8String:html_content];
         lastHTMLString = [htmlString copy];
-        [webView loadHTMLString:lastHTMLString baseURL:nil];
+        [webView loadHTMLString:lastHTMLString baseURL:FarmhandAppBaseURL()];
     }
 }
 
