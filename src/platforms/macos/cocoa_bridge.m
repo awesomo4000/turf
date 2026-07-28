@@ -153,11 +153,13 @@ static NSURL *FarmhandAppBaseURL(void) {
 }
 
 - (IBAction)reload:(id)sender {
-    [self reload];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self reload];
+    });
 }
 
 - (IBAction)reloadFromOrigin:(id)sender {
-    [self reload];
+    [self reload:sender];
 }
 
 - (void)routeReloadItemsInMenu:(NSMenu *)menu {
@@ -247,9 +249,11 @@ static NSURL *FarmhandAppBaseURL(void) {
 }
 
 - (IBAction)reload:(id)sender {
-    if (webView != nil && [webView isKindOfClass:[TurfWebView class]]) {
-        [(TurfWebView *)webView reload];
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (webView != nil && [webView isKindOfClass:[TurfWebView class]]) {
+            [(TurfWebView *)webView reload];
+        }
+    });
 }
 
 - (IBAction)reloadFromOrigin:(id)sender {
