@@ -36,7 +36,7 @@ The process uses `NSApplicationActivationPolicyProhibited`. It does not:
 
 The window remains necessary because WebKit mouse and context-menu handling expects a real AppKit window and window number, even when the UI is not visible.
 
-## Private WebKit test selectors
+## Private WebKit test selectors and tags
 
 The sample declares three selectors in a test-only Objective-C category:
 
@@ -48,7 +48,9 @@ The sample declares three selectors in a test-only Objective-C category:
 
 These are private WebKit test SPI, patterned after WebKit's `TestWKWebView` harness. They are runtime-checked before use. If the installed WebKit framework does not expose them, the sample prints `SKIP` and exits successfully.
 
-Never add these declarations to Turf's production Cocoa bridge or ship code that depends on them. Apple may rename or remove them in any macOS release.
+The context-menu items are matched by WebCore's internal `ContextMenuItemTag` values (`Reload = 12`, `Inspect Element = 57`) rather than localized display text. Those values are private too and may change with WebKit. A five-second tracking deadline cancels the menu and fails the sample if the expected command is absent.
+
+Never add these selectors or tags to Turf's production Cocoa bridge or ship code that depends on them. Apple may rename, renumber, or remove them in any macOS release.
 
 ## Native context-menu Reload
 
@@ -85,11 +87,13 @@ The default step stays cross-platform and does not link private macOS test machi
 For a project-specific regression:
 
 1. Copy `reload_hover_test.m` into that project's test tree.
-2. Include or link the same Cocoa bridge used by the application under test.
+2. Keep its textual `#include` of the production Cocoa bridge. The unmodified sample depends on file-static bridge state, so the bridge must be included in this translation unit exactly once and must not also be compiled separately into the test executable.
 3. Supply the native callback symbols expected by the bridge.
 4. Replace the sample HTML and callback counters with the project's observable contract.
 5. Add a macOS-only Zig build target that compiles Objective-C with `-fobjc-arc` and `-fblocks`, then links Cocoa and WebKit.
 6. Keep the target explicit and keep all private selector declarations in the test translation unit.
+
+If a project wants to link its bridge as a separate object instead, first refactor the sample to drive exported application boundaries rather than Turf's file-static `webView` and `appSchemeHandler` state.
 
 For example, the relevant Zig build shape is:
 

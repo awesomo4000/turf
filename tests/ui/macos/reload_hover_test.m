@@ -112,12 +112,17 @@ static void moveMouse(NSWindow *hostWindow, NSPoint point) {
     waitForPendingMouseEvents();
 }
 
-static NSMenuItem *findMenuItem(NSMenu *menu, NSString *title) {
+// WebCore::ContextMenuItemTag values from Source/WebCore/page/ContextMenuItem.h.
+// These are private test dependencies, like the WKWebView selectors above.
+static const NSInteger WebKitContextMenuItemTagReload = 12;
+static const NSInteger WebKitContextMenuItemTagInspectElement = 57;
+
+static NSMenuItem *findMenuItemWithTag(NSMenu *menu, NSInteger tag) {
     for (NSMenuItem *item in menu.itemArray) {
-        if ([item.title isEqualToString:title])
+        if (item.tag == tag)
             return item;
         if (item.submenu != nil) {
-            NSMenuItem *nested = findMenuItem(item.submenu, title);
+            NSMenuItem *nested = findMenuItemWithTag(item.submenu, tag);
             if (nested != nil)
                 return nested;
         }
@@ -132,15 +137,27 @@ static BOOL selectReloadFromContextMenu(
 ) {
     __block BOOL selectedReload = NO;
     __block BOOL sawInspector = NO;
+    __block BOOL finishedTracking = NO;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
     NSTimer *timer = [NSTimer
         timerWithTimeInterval:0.05
         repeats:YES
         block:^(NSTimer *activeTimer) {
             NSMenu *menu = [webView _activeMenu];
+            if ([deadline timeIntervalSinceNow] <= 0) {
+                [menu cancelTrackingWithoutAnimation];
+                [activeTimer invalidate];
+                finishedTracking = YES;
+                return;
+            }
             if (menu == nil)
                 return;
-            sawInspector = findMenuItem(menu, @"Inspect Element") != nil;
-            NSMenuItem *reloadItem = findMenuItem(menu, @"Reload");
+            sawInspector = findMenuItemWithTag(
+                menu,
+                WebKitContextMenuItemTagInspectElement) != nil;
+            NSMenuItem *reloadItem = findMenuItemWithTag(
+                menu,
+                WebKitContextMenuItemTagReload);
             if (reloadItem == nil)
                 return;
             NSMenu *itemMenu = reloadItem.menu;
@@ -148,6 +165,7 @@ static BOOL selectReloadFromContextMenu(
             [menu cancelTracking];
             [activeTimer invalidate];
             selectedReload = YES;
+            finishedTracking = YES;
         }];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSEventTrackingRunLoopMode];
 
@@ -173,7 +191,10 @@ static BOOL selectReloadFromContextMenu(
         pressure:0];
     [hostWindow sendEvent:down];
     [hostWindow sendEvent:up];
-    pumpUntil(^BOOL { return selectedReload; }, 5.0);
+    if (!pumpUntil(^BOOL { return finishedTracking; }, 5.5)) {
+        [[webView _activeMenu] cancelTrackingWithoutAnimation];
+        [timer invalidate];
+    }
     if (foundInspector)
         *foundInspector = sawInspector;
     return selectedReload;
@@ -210,8 +231,13 @@ int main(void) {
             configuration:configuration];
         webView.UIDelegate = delegate;
         webView.navigationDelegate = delegate;
-        if ([webView respondsToSelector:@selector(setInspectable:)])
-            webView.inspectable = YES;
+        SEL setInspectableSelector = NSSelectorFromString(@"setInspectable:");
+        if ([webView respondsToSelector:setInspectableSelector]) {
+            typedef void (*SetInspectableFunction)(id, SEL, BOOL);
+            SetInspectableFunction function =
+                (SetInspectableFunction)[webView methodForSelector:setInspectableSelector];
+            function(webView, setInspectableSelector, YES);
+        }
         hostWindow.contentView = webView;
         [hostWindow makeKeyAndOrderFront:nil];
 
