@@ -7,6 +7,8 @@
 The sample checks:
 
 - Turf's stable application URL;
+- no prior `WKBackForwardList` item on the first application document;
+- normal Back history after a later application navigation;
 - WebKit's native Reload and Inspect Element menu items;
 - CSS `:hover` before and after Reload;
 - `sessionStorage` across Reload;
@@ -31,6 +33,12 @@ Use this harness for AppKit/WebKit event routing, native context menus, reload l
 For ordinary application behavior after native plumbing is known-good, prefer DOM interaction. DOM tests are the practical default for controls, rendering, state transitions, validation, and bridge messages. They are faster and less coupled to private WebKit SPI.
 
 Neither approach requires foreground OS automation. Do not use `osascript`, activate the tested application, or move the workstation pointer from tests.
+
+## Initial navigation history
+
+Before creating the interaction host, the sample invokes Turf's real `NSApplicationLoad`, `NSCreateWindow`, and `NSLoadString` sequence. Test-only method overrides capture the production `TurfWindow` without presenting or centering it. After `turf://localhost/index.html` finishes loading, the sample requires `webView.backForwardList.backItem` to be `nil`.
+
+Turf therefore does not manufacture an `about:blank` history entry before application content. WebKit naturally omits Back on the first screen, while applications that later create real history retain normal Back behavior. This check uses public `WKWebView` history APIs and does not depend on the private pointer SPI used by the interaction checks.
 
 ## How the offscreen host window works
 
@@ -79,7 +87,7 @@ zig build test-ui-macos
 A supported WebKit version prints:
 
 ```text
-PASS: native Reload preserved hover, state, Inspect Element, and bidirectional messaging
+PASS: root history, native Reload, hover, state, Inspect Element, and bidirectional messaging
 ```
 
 A WebKit version without the required test selectors prints an explicit `SKIP` message.

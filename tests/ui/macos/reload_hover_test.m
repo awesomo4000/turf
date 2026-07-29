@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <objc/runtime.h>
 
 #include "../../../src/platforms/macos/cocoa_bridge.m"
 
@@ -205,10 +206,85 @@ static int fail(NSString *message) {
     return 1;
 }
 
+static NSWindow *productionTestWindow = nil;
+
+static void captureWindowWithoutPresentation(id receiver, SEL command, id sender) {
+    productionTestWindow = receiver;
+}
+
+static void suppressWindowCentering(id receiver, SEL command) { }
+
+static BOOL suppressTurfWindowPresentation(void) {
+    Class windowClass = [TurfWindow class];
+    Method showMethod = class_getInstanceMethod(
+        windowClass,
+        @selector(makeKeyAndOrderFront:));
+    Method centerMethod = class_getInstanceMethod(windowClass, @selector(center));
+    return class_addMethod(
+               windowClass,
+               @selector(makeKeyAndOrderFront:),
+               (IMP)captureWindowWithoutPresentation,
+               method_getTypeEncoding(showMethod)) &&
+           class_addMethod(
+               windowClass,
+               @selector(center),
+               (IMP)suppressWindowCentering,
+               method_getTypeEncoding(centerMethod));
+}
+
+static const char *probeHTML =
+    "<!doctype html><meta charset='utf-8'>"
+    "<style>body{margin:0}#probe{position:absolute;left:50px;top:50px;width:100px;height:50px;background:rgb(255,0,0)}#probe:hover{background:rgb(0,128,0)}</style>"
+    "<button id='probe'>probe</button>"
+    "<script>"
+    "const loads=Number(sessionStorage.getItem('loads')||0)+1;"
+    "sessionStorage.setItem('loads',String(loads));"
+    "window.webkit.messageHandlers.__turf__.postMessage(JSON.stringify({type:'probe.ready',loads}));"
+    "</script>";
+
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+
+        if (!NSApplicationLoad())
+            return fail(@"production application initialization failed");
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
+        if (!suppressTurfWindowPresentation())
+            return fail(@"could not suppress production window presentation");
+
+        NSCreateWindow(-10000, -10000, 400, 300, "Turf history test", "");
+        NSWindow *productionWindow = productionTestWindow;
+        if (webView.loading && !pumpUntil(^BOOL { return !webView.loading; }, 5.0))
+            return fail(@"production placeholder navigation did not settle");
+
+        TurfTestNavigationDelegate *productionDelegate =
+            [[TurfTestNavigationDelegate alloc] init];
+        webView.navigationDelegate = productionDelegate;
+        NSLoadString(probeHTML);
+        if (!pumpUntil(^BOOL {
+            return navigationFinishedCount >= 1 && readyMessageCount >= 1;
+        }, 5.0))
+            return fail(@"production initial Turf page did not finish");
+        if (webView.backForwardList.backItem != nil)
+            return fail(@"production initial Turf page retained prior navigation history");
+
+        NSLoadURL("turf://localhost/?screen=second");
+        if (!pumpUntil(^BOOL {
+            return navigationFinishedCount >= 2 && readyMessageCount >= 2;
+        }, 5.0))
+            return fail(@"production second Turf page did not finish");
+        NSURL *backURL = webView.backForwardList.backItem.URL;
+        if (!webView.canGoBack ||
+            ![backURL.absoluteString isEqualToString:@"turf://localhost/index.html"])
+            return fail(@"production navigation did not retain real back history");
+
+        [productionWindow setReleasedWhenClosed:NO];
+        [productionWindow close];
+        productionTestWindow = nil;
+        navigationStartedCount = 0;
+        navigationFinishedCount = 0;
+        readyMessageCount = 0;
 
         WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
         appSchemeHandler = [[TurfURLSchemeHandler alloc] init];
@@ -247,16 +323,7 @@ int main(void) {
             return 0;
         }
 
-        const char *html =
-            "<!doctype html><meta charset='utf-8'>"
-            "<style>body{margin:0}#probe{position:absolute;left:50px;top:50px;width:100px;height:50px;background:rgb(255,0,0)}#probe:hover{background:rgb(0,128,0)}</style>"
-            "<button id='probe'>probe</button>"
-            "<script>"
-            "const loads=Number(sessionStorage.getItem('loads')||0)+1;"
-            "sessionStorage.setItem('loads',String(loads));"
-            "window.webkit.messageHandlers.__turf__.postMessage(JSON.stringify({type:'probe.ready',loads}));"
-            "</script>";
-        NSLoadString(html);
+        NSLoadString(probeHTML);
 
         if (!pumpUntil(^BOOL {
             return navigationFinishedCount >= 1 && readyMessageCount >= 1;
@@ -322,7 +389,7 @@ int main(void) {
 
         [hostWindow orderOut:nil];
         fprintf(stdout,
-            "PASS: native Reload preserved hover, state, Inspect Element, and bidirectional messaging\n");
+            "PASS: root history, native Reload, hover, state, Inspect Element, and bidirectional messaging\n");
         return 0;
     }
 }

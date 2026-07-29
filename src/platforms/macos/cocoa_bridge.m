@@ -465,10 +465,6 @@ void NSCreateWindow(int x, int y, int w, int h,
     // Make sure the WebView has focus
     [window makeFirstResponder:webView];
 
-    // Load a default URL
-    NSURL *url = [NSURL URLWithString:@"about:blank"];
-    NSURLRequest *request = [NSURLRequest requestWithURL:url];
-    [webView loadRequest:request];
     
     // Set webView as the window's content view
     [window setContentView:parentView];
