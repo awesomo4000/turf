@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const common = @import("common");
-const diagnostics = @import("../../bridge_diagnostics.zig");
+const diagnostics = @import("bridge_diagnostics");
 
 // External Cocoa bridge functions declared in cocoa_bridge.m
 extern fn NSApplicationLoad() bool;

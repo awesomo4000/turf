@@ -4,8 +4,8 @@
 // Windows platform backend using WebView2
 const std = @import("std");
 const webview2 = @import("webview2.zig");
-const common = @import("../../common.zig");
-const diagnostics = @import("../../bridge_diagnostics.zig");
+const common = @import("common");
+const diagnostics = @import("bridge_diagnostics");
 
 const windows = std.os.windows;
 const HWND = windows.HWND;

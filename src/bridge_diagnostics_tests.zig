@@ -2,7 +2,7 @@
 // Copyright (c) 2025-2026 awesomo4000
 
 const std = @import("std");
-const diagnostics = @import("bridge_diagnostics.zig");
+const diagnostics = @import("bridge_diagnostics");
 
 const marker = "FARMHAND_SECRET_INPUT_7f4c";
 

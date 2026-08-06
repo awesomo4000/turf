@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const diagnostics = @import("../../bridge_diagnostics.zig");
+const diagnostics = @import("bridge_diagnostics");
 pub const win = std.os.windows;
 
 // Windows calling convention

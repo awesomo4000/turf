@@ -2,8 +2,8 @@
 // Copyright (c) 2025-2026 awesomo4000
 
 const std = @import("std");
-const common = @import("../../common.zig");
-const diagnostics = @import("../../bridge_diagnostics.zig");
+const common = @import("common");
+const diagnostics = @import("bridge_diagnostics");
 
 // C imports for GTK4 and WebKit6
 const c = @cImport({
