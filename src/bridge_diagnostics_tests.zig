@@ -5,6 +5,8 @@ const std = @import("std");
 const diagnostics = @import("bridge_diagnostics");
 
 const marker = "FARMHAND_SECRET_INPUT_7f4c";
+const webkit_bridge = @embedFile("web/turf.js");
+const windows_bridge = @embedFile("web/platforms/windows/turf.js");
 
 fn expectPayloadAbsent(output: []const u8, payload: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, output, marker) == null);
@@ -75,4 +77,16 @@ test "malformed diagnostic reports error class without source" {
 
     try std.testing.expectEqualStrings("Failed to parse JavaScript message: error=InvalidCharacter, bytes=36\n", output.written());
     try expectPayloadAbsent(output.written(), malformed);
+}
+
+test "browser bridge scripts contain no payload-bearing console diagnostics" {
+    const forbidden = [_][]const u8{
+        "Sent message to native app:",
+        "Native message received:",
+    };
+    for ([_][]const u8{ webkit_bridge, windows_bridge }) |script| {
+        for (forbidden) |text| {
+            try std.testing.expect(std.mem.indexOf(u8, script, text) == null);
+        }
+    }
 }

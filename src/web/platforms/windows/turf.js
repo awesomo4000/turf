@@ -31,7 +31,6 @@
             
             const jsonMessage = JSON.stringify(formattedMessage);
             window.chrome.webview.postMessage(jsonMessage);
-            // console.log('Sent message to native app:', jsonMessage);
         } else {
             console.error('WebView2 communication not available');
         }
@@ -59,7 +58,6 @@
 
     // Internal function to handle messages from native
     function handleNativeMessage(msg) {
-        // console.log('Native message received:', msg);
         
         // Call registered handlers based on message type
         if (msg.type && registry[msg.type]) {

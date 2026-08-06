@@ -32,7 +32,6 @@
             
             const jsonMessage = JSON.stringify(formattedMessage);
             window.webkit.messageHandlers.__turf__.postMessage(jsonMessage);
-            console.log('Sent message to native app:', jsonMessage);
         } else {
             console.error('Native communication not available');
         }
@@ -95,7 +94,6 @@
 
     // Internal function to handle messages from native
     function handleNativeMessage(msg) {
-        console.log('Native message received:', msg);
         
         if (!dispatchNativeMessage(msg)) {
             pendingMessages.push(msg);

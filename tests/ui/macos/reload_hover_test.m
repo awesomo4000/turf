@@ -253,7 +253,22 @@ int main(void) {
         if (!suppressTurfWindowPresentation())
             return fail(@"could not suppress production window presentation");
 
-        NSCreateWindow(-10000, -10000, 400, 300, "Turf history test", "");
+        NSString *testFile = [NSString stringWithUTF8String:__FILE__];
+        NSString *projectRoot = [[[[testFile
+            stringByDeletingLastPathComponent]
+            stringByDeletingLastPathComponent]
+            stringByDeletingLastPathComponent]
+            stringByDeletingLastPathComponent];
+        NSString *bridgePath = [projectRoot
+            stringByAppendingPathComponent:@"src/web/turf.js"];
+        NSError *bridgeSourceError = nil;
+        NSString *bridgeSource = [NSString
+            stringWithContentsOfFile:bridgePath
+            encoding:NSUTF8StringEncoding
+            error:&bridgeSourceError];
+        if (bridgeSourceError != nil || bridgeSource == nil)
+            return fail(@"could not load the production Turf browser bridge");
+        NSCreateWindow(-10000, -10000, 400, 300, "Turf history test", bridgeSource.UTF8String);
         NSWindow *productionWindow = productionTestWindow;
         if (webView.loading && !pumpUntil(^BOOL { return !webView.loading; }, 5.0))
             return fail(@"production placeholder navigation did not settle");
@@ -266,6 +281,19 @@ int main(void) {
             return navigationFinishedCount >= 1 && readyMessageCount >= 1;
         }, 5.0))
             return fail(@"production initial Turf page did not finish");
+        NSError *bridgeError = nil;
+        NSString *bridgeConsole = evaluateSynchronously(
+            @"(() => {"
+             "const marker='FARMHAND_SECRET_INPUT_7f4c';"
+             "const captured=[];"
+             "console.log=(...args)=>captured.push(args.map(String).join(' '));"
+             "window.turf.send({type:'terminal.input',data:{data_b64:marker}});"
+             "window.turf._handleNativeMessage({type:'daemon.message',data:{data_b64:marker}});"
+             "return captured.join('\\n');"
+             "})()",
+            &bridgeError);
+        if (bridgeError != nil || [bridgeConsole containsString:@"FARMHAND_SECRET_INPUT_7f4c"])
+            return fail(@"Turf browser bridge logged a terminal payload");
         if (webView.backForwardList.backItem != nil)
             return fail(@"production initial Turf page retained prior navigation history");
 
