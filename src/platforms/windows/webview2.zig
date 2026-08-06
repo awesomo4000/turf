@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const diagnostics = @import("../../bridge_diagnostics.zig");
 pub const win = std.os.windows;
 
 // Windows calling convention
@@ -847,7 +848,11 @@ pub const WebView = struct {
     pub fn postMessageAsJson(self: *Self, json: []const u8) void {
         // Check if page is ready to receive messages
         if (!self.is_page_ready) {
-            std.debug.print("Page not ready yet, skipping message: {s}\n", .{json});
+            diagnostics.log(.{ .not_ready = .{
+                .direction = .outbound,
+                .message_type = null,
+                .byte_count = json.len,
+            } });
             return;
         }
         
@@ -1461,7 +1466,6 @@ const WebMessageReceivedHandler = extern struct {
             };
             
             const message_str = utf8_buffer[0..utf8_len];
-            std.debug.print("Received message from JavaScript: {s}\n", .{message_str});
             
             // Call the backend's message handler
             @import("backend.zig").onJavaScriptMessage(message_str);

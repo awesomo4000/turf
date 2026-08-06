@@ -220,6 +220,16 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
+    const bridge_diagnostics_test_module = b.createModule(.{
+        .root_source_file = b.path("src/bridge_diagnostics_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const bridge_diagnostics_tests = b.addTest(.{
+        .root_module = bridge_diagnostics_test_module,
+    });
+    const run_bridge_diagnostics_tests = b.addRunArtifact(bridge_diagnostics_tests);
+
     const exe_test_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -253,6 +263,7 @@ pub fn build(b: *std.Build) void {
     const tests_step = b.step("test", "Run unit tests");
     tests_step.dependOn(&run_lib_unit_tests.step);
     tests_step.dependOn(&run_exe_unit_tests.step);
+    tests_step.dependOn(&run_bridge_diagnostics_tests.step);
 
     if (target_os == .macos) {
         const ui_test_module = b.createModule(.{

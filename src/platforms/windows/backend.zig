@@ -5,6 +5,7 @@
 const std = @import("std");
 const webview2 = @import("webview2.zig");
 const common = @import("../../common.zig");
+const diagnostics = @import("../../bridge_diagnostics.zig");
 
 const windows = std.os.windows;
 const HWND = windows.HWND;
@@ -222,6 +223,11 @@ pub const PlatformWindow = struct {
                     window.allocator.free(msg.data);
                 }
                 
+                diagnostics.log(.{ .message = .{
+                    .direction = .outbound,
+                    .message_type = diagnostics.classifyMessageType(msg.type),
+                    .byte_count = msg.data.len,
+                } });
                 // Format message for PostWebMessageAsJson
                 const json_msg = std.fmt.allocPrint(
                     window.allocator,
@@ -270,14 +276,47 @@ fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
 
     // For the demo app, we'll handle messages directly here
     // Parse the JSON message
-    const parsed = std.json.parseFromSlice(std.json.Value, window.allocator, message, .{}) catch {
-        std.debug.print("Failed to parse message: {s}\n", .{message});
+    const parsed = std.json.parseFromSlice(std.json.Value, window.allocator, message, .{}) catch |err| {
+        diagnostics.log(.{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .{ .parser = err },
+        } });
         return;
     };
     defer parsed.deinit();
-    
-    const root = parsed.value.object;
-    const msg_type = root.get("type") orelse return;
+
+    const root_value = parsed.value;
+    if (root_value != .object) {
+        diagnostics.log(.{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .invalid_root,
+        } });
+        return;
+    }
+    const root = root_value.object;
+    const msg_type = root.get("type") orelse {
+        diagnostics.log(.{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .missing_type,
+        } });
+        return;
+    };
+    if (msg_type != .string) {
+        diagnostics.log(.{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .invalid_type,
+        } });
+        return;
+    }
+    diagnostics.log(.{ .message = .{
+        .direction = .inbound,
+        .message_type = diagnostics.classifyMessageType(msg_type.string),
+        .byte_count = message.len,
+    } });
     
     // Handle different message types
     if (std.mem.eql(u8, msg_type.string, "ping")) {

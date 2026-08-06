@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const common = @import("common");
+const diagnostics = @import("../../bridge_diagnostics.zig");
 
 // External Cocoa bridge functions declared in cocoa_bridge.m
 extern fn NSApplicationLoad() bool;
@@ -29,8 +30,6 @@ var global_platform_window: ?*PlatformWindow = null;
 // JavaScript message handler callback
 pub export fn onJavaScriptMessage(message: [*c]const u8) void {
     const msg = std.mem.span(message);
-    std.debug.print("Native received JS message: {s}\n", .{msg});
-
     // Parse the JSON message
     if (global_platform_window) |window| {
         handleJavaScriptMessage(window, msg) catch |err| {
@@ -65,10 +64,22 @@ fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
         allocator,
         msg,
         .{},
-    ) catch return;
+    ) catch |err| {
+        diagnostics.log(.{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = msg.len,
+            .error_class = .{ .parser = err },
+        } });
+        return;
+    };
     defer parsed.deinit();
 
     const msg_type = parsed.value.type;
+    diagnostics.log(.{ .message = .{
+        .direction = .inbound,
+        .message_type = diagnostics.classifyMessageType(msg_type),
+        .byte_count = msg.len,
+    } });
     if (std.mem.eql(u8, msg_type, "turf_ready")) {
         window.delivery_suspended.store(false, .seq_cst);
         return;
@@ -273,6 +284,11 @@ pub const PlatformWindow = struct {
         try writer.print("(() => {{ const batchId = '{d}'; const delivered = window.__turf_delivered_batches || (window.__turf_delivered_batches = new Set()); if (delivered.has(batchId)) return true; if (!window.turf || !window.turf._handleNativeMessage) return false; const messages = [", .{batch_id});
         for (messages, 0..) |msg, i| {
             if (i > 0) try writer.writeAll(",");
+            diagnostics.log(.{ .message = .{
+                .direction = .outbound,
+                .message_type = diagnostics.classifyMessageType(msg.type),
+                .byte_count = msg.data.len,
+            } });
             try writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data });
         }
         try writer.writeAll("]; for (const message of messages) window.turf._handleNativeMessage(message); delivered.add(batchId); return true; })()");
