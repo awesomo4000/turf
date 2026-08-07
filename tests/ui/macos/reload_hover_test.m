@@ -14,6 +14,7 @@ static NSInteger navigationStartedCount = 0;
 static NSInteger navigationFinishedCount = 0;
 static NSInteger readyMessageCount = 0;
 static NSInteger interactionMessageCount = 0;
+static NSInteger turfReadyMessageCount = 0;
 
 void onWindowEvent(int x, int y, int width, int height) { }
 void onWindowGeometryEvent(int x, int y, int width, int height) { }
@@ -25,6 +26,8 @@ void onJavaScriptMessage(const char *message) {
         readyMessageCount += 1;
     if ([body containsString:@"probe.interaction"])
         interactionMessageCount += 1;
+    if ([body containsString:@"turf_ready"])
+        turfReadyMessageCount += 1;
 }
 
 @interface TurfTestNavigationDelegate : WebViewDelegate
@@ -237,6 +240,23 @@ static const char *probeHTML =
     "<style>body{margin:0}#probe{position:absolute;left:50px;top:50px;width:100px;height:50px;background:rgb(255,0,0)}#probe:hover{background:rgb(0,128,0)}</style>"
     "<button id='probe'>probe</button>"
     "<script>"
+    "window.signatureLifecycle={observed:false,animationDuration:'',removed:false};"
+    "let observedSignature=null;"
+    "new MutationObserver(records=>{"
+    "for(const record of records){"
+    "for(const node of record.addedNodes){"
+    "if(node.nodeType===Node.ELEMENT_NODE&&node.id==='turf-signature'){"
+    "observedSignature=node;"
+    "window.signatureLifecycle.observed=true;"
+    "window.signatureLifecycle.animationDuration=getComputedStyle(node).animationDuration;"
+    "}"
+    "}"
+    "for(const node of record.removedNodes){"
+    "if(node===observedSignature)"
+    "window.signatureLifecycle.removed=true;"
+    "}"
+    "}"
+    "}).observe(document.documentElement,{childList:true,subtree:true});"
     "const loads=Number(sessionStorage.getItem('loads')||0)+1;"
     "sessionStorage.setItem('loads',String(loads));"
     "window.webkit.messageHandlers.__turf__.postMessage(JSON.stringify({type:'probe.ready',loads}));"
@@ -282,6 +302,30 @@ int main(void) {
         }, 5.0))
             return fail(@"production initial Turf page did not finish");
         NSError *bridgeError = nil;
+        if (!pumpUntil(^BOOL { return turfReadyMessageCount >= 1; }, 5.0))
+            return fail(@"production Turf page did not message native readiness");
+        NSNumber *signatureObserved = evaluateSynchronously(
+            @"window.signatureLifecycle.observed === true",
+            &bridgeError);
+        if (bridgeError != nil || !signatureObserved.boolValue)
+            return fail(@"production Turf signature was not observed");
+        NSString *signatureAnimationDuration = evaluateSynchronously(
+            @"window.signatureLifecycle.animationDuration",
+            &bridgeError);
+        if (bridgeError != nil ||
+            ![signatureAnimationDuration isEqualToString:@"1.2s"])
+            return fail(@"production Turf signature animation duration was not 1.2s");
+        pumpUntil(^BOOL { return NO; }, 1.3);
+        NSNumber *signatureRemoved = evaluateSynchronously(
+            @"window.signatureLifecycle.removed === true",
+            &bridgeError);
+        if (bridgeError != nil || !signatureRemoved.boolValue)
+            return fail(@"production Turf signature was not removed after its lifecycle");
+        NSNumber *signatureAbsent = evaluateSynchronously(
+            @"document.getElementById('turf-signature') === null",
+            &bridgeError);
+        if (bridgeError != nil || !signatureAbsent.boolValue)
+            return fail(@"production Turf signature remained in the DOM");
         NSString *bridgeConsole = evaluateSynchronously(
             @"(() => {"
              "const marker='FARMHAND_SECRET_INPUT_7f4c';"
