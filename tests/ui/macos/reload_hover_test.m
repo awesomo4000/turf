@@ -331,6 +331,17 @@ int main(void) {
         if (bridgeError != nil ||
             ![signatureAnimationDuration isEqualToString:@"1.2s"])
             return fail(@"production Turf signature animation duration was not 1.2s");
+        NSNumber *signatureFadeIsNeutral = evaluateSynchronously(
+            @"(() => {"
+             "const animation=document.getElementById('turf-signature')?.getAnimations()[0];"
+             "if(!animation)return false;"
+             "const keyframes=animation.effect.getKeyframes();"
+             "return [0.75,1].every(offset=>keyframes.some(keyframe=>"
+             "keyframe.offset===offset&&keyframe.backgroundImage==='none'));"
+             "})()",
+            &bridgeError);
+        if (bridgeError != nil || !signatureFadeIsNeutral.boolValue)
+            return fail(@"production Turf signature fade retained its rainbow background");
         pumpUntil(^BOOL { return NO; }, 1.3);
         NSNumber *signatureRemoved = evaluateSynchronously(
             @"window.signatureLifecycle.removed === true",

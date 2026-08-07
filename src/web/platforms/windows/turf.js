@@ -121,6 +121,7 @@
     background-position: 250% 0, 0 0;
     transform: scale(1);
     color: #666;
+    background-image: none;
     -webkit-background-clip: border-box;
     background-clip: border-box;
     opacity: 1;
@@ -129,6 +130,7 @@
     background-position: 250% 0, 0 0;
     transform: scale(1);
     color: #666;
+    background-image: none;
     -webkit-background-clip: border-box;
     background-clip: border-box;
     opacity: 0;
