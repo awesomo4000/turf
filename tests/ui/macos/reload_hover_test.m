@@ -213,9 +213,17 @@ static NSWindow *productionTestWindow = nil;
 
 static void captureWindowWithoutPresentation(id receiver, SEL command, id sender) {
     productionTestWindow = receiver;
+    [receiver setIgnoresMouseEvents:YES];
+    [receiver setAlphaValue:0.0];
+    [receiver orderFrontRegardless];
+    [receiver setFrameOrigin:NSMakePoint(-10000, -10000)];
 }
 
 static void suppressWindowCentering(id receiver, SEL command) { }
+
+static NSWindowOcclusionState reportWindowVisibleForRendering(id receiver, SEL command) {
+    return NSWindowOcclusionStateVisible;
+}
 
 static BOOL suppressTurfWindowPresentation(void) {
     Class windowClass = [TurfWindow class];
@@ -223,6 +231,9 @@ static BOOL suppressTurfWindowPresentation(void) {
         windowClass,
         @selector(makeKeyAndOrderFront:));
     Method centerMethod = class_getInstanceMethod(windowClass, @selector(center));
+    Method occlusionMethod = class_getInstanceMethod(
+        windowClass,
+        @selector(occlusionState));
     return class_addMethod(
                windowClass,
                @selector(makeKeyAndOrderFront:),
@@ -232,7 +243,12 @@ static BOOL suppressTurfWindowPresentation(void) {
                windowClass,
                @selector(center),
                (IMP)suppressWindowCentering,
-               method_getTypeEncoding(centerMethod));
+               method_getTypeEncoding(centerMethod)) &&
+           class_addMethod(
+               windowClass,
+               @selector(occlusionState),
+               (IMP)reportWindowVisibleForRendering,
+               method_getTypeEncoding(occlusionMethod));
 }
 
 static const char *probeHTML =
