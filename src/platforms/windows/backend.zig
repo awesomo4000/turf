@@ -4,7 +4,8 @@
 // Windows platform backend using WebView2
 const std = @import("std");
 const webview2 = @import("webview2.zig");
-const common = @import("../../common.zig");
+const common = @import("common");
+const diagnostics = @import("bridge_diagnostics");
 
 const windows = std.os.windows;
 const HWND = windows.HWND;
@@ -15,6 +16,7 @@ pub const PlatformWindow = struct {
     allocator: std.mem.Allocator,
     webview: ?*webview2.WebView,
     message_queue: *common.MessageQueue,
+    message_handler: ?common.MessageHandler = null,
     message_pump_thread: ?std.Thread,
     config: common.WindowConfig,
     js_inject_code: [:0]const u8,
@@ -134,6 +136,16 @@ pub const PlatformWindow = struct {
         }
     }
 
+    pub fn requestClose(self: *Self) void {
+        if (self.webview) |wv| {
+            wv.requestClose();
+        }
+    }
+
+    pub fn setMessageHandler(self: *Self, handler: ?common.MessageHandler) void {
+        self.message_handler = handler;
+    }
+
     pub fn setHTML(self: *Self, html: [:0]const u8) void {
         self.loadHTML(html, null);
     }
@@ -151,6 +163,7 @@ pub const PlatformWindow = struct {
             .height = @intCast(self.config.geometry.height),
             .url = null,
             .html = self.initial_html,
+            .bridge_diagnostics = self.config.bridge_diagnostics,
             .js_inject = blk: {
                 const js = if (self.js_inject_code.len > 0) self.js_inject_code else null;
                 if (js) |j| {
@@ -217,6 +230,11 @@ pub const PlatformWindow = struct {
                     window.allocator.free(msg.data);
                 }
                 
+                diagnostics.log(window.config.bridge_diagnostics, .{ .message = .{
+                    .direction = .outbound,
+                    .message_type = diagnostics.classifyMessageType(msg.type),
+                    .byte_count = msg.data.len,
+                } });
                 // Format message for PostWebMessageAsJson
                 const json_msg = std.fmt.allocPrint(
                     window.allocator,
@@ -259,16 +277,53 @@ pub fn onJavaScriptMessage(message: []const u8) void {
 }
 
 fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
+    if (window.message_handler) |handler| {
+        handler.dispatch(message);
+    }
+
     // For the demo app, we'll handle messages directly here
     // Parse the JSON message
-    const parsed = std.json.parseFromSlice(std.json.Value, window.allocator, message, .{}) catch {
-        std.debug.print("Failed to parse message: {s}\n", .{message});
+    const parsed = std.json.parseFromSlice(std.json.Value, window.allocator, message, .{}) catch |err| {
+        diagnostics.log(window.config.bridge_diagnostics, .{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .{ .parser = err },
+        } });
         return;
     };
     defer parsed.deinit();
-    
-    const root = parsed.value.object;
-    const msg_type = root.get("type") orelse return;
+
+    const root_value = parsed.value;
+    if (root_value != .object) {
+        diagnostics.log(window.config.bridge_diagnostics, .{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .invalid_root,
+        } });
+        return;
+    }
+    const root = root_value.object;
+    const msg_type = root.get("type") orelse {
+        diagnostics.log(window.config.bridge_diagnostics, .{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .missing_type,
+        } });
+        return;
+    };
+    if (msg_type != .string) {
+        diagnostics.log(window.config.bridge_diagnostics, .{ .parse_failure = .{
+            .direction = .inbound,
+            .byte_count = message.len,
+            .error_class = .invalid_type,
+        } });
+        return;
+    }
+    diagnostics.log(window.config.bridge_diagnostics, .{ .message = .{
+        .direction = .inbound,
+        .message_type = diagnostics.classifyMessageType(msg_type.string),
+        .byte_count = message.len,
+    } });
     
     // Handle different message types
     if (std.mem.eql(u8, msg_type.string, "ping")) {

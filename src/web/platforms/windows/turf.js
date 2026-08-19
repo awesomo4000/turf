@@ -31,7 +31,6 @@
             
             const jsonMessage = JSON.stringify(formattedMessage);
             window.chrome.webview.postMessage(jsonMessage);
-            // console.log('Sent message to native app:', jsonMessage);
         } else {
             console.error('WebView2 communication not available');
         }
@@ -59,7 +58,6 @@
 
     // Internal function to handle messages from native
     function handleNativeMessage(msg) {
-        // console.log('Native message received:', msg);
         
         // Call registered handlers based on message type
         if (msg.type && registry[msg.type]) {
@@ -82,7 +80,7 @@
 
     // Add the CSS and signature after DOM is ready
     function addTurfSignature() {
-        // Add the CSS keyframes for the shimmer effect
+        // Add the CSS keyframes for the signature lifecycle
         const style = document.createElement('style');
         style.textContent = `
 #turf-signature {
@@ -100,29 +98,42 @@
     linear-gradient(90deg, transparent 20%, rgba(255,255,255,0.8) 50%, transparent 80%),
     linear-gradient(90deg, #ff0000, #ff8000, #ffff00, #00ff00, #0080ff, #8000ff);
   background-size: 200% 100%, 100% 100%;
-  animation: rainbowShimmer 1.5s ease-in-out forwards;
+  animation: turfSignatureLifecycle 1.2s ease-in-out forwards;
 }
 
-@keyframes rainbowShimmer {
+@keyframes turfSignatureLifecycle {
   0% {
     background-position: -150% 0, 0 0;
     transform: scale(1);
     color: transparent;
     -webkit-background-clip: text;
     background-clip: text;
+    opacity: 1;
   }
   50% {
     transform: scale(1.15);
     color: transparent;
     -webkit-background-clip: text;
     background-clip: text;
+    opacity: 1;
+  }
+  75% {
+    background-position: 250% 0, 0 0;
+    transform: scale(1);
+    color: #666;
+    background-image: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    opacity: 1;
   }
   100% {
     background-position: 250% 0, 0 0;
     transform: scale(1);
-    color: transparent;
-    -webkit-background-clip: text;
-    background-clip: text;
+    color: #666;
+    background-image: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    opacity: 0;
   }
 }`;
         document.head.appendChild(style);
@@ -133,7 +144,7 @@
         const signatureElement = document.getElementById('turf-signature');
         if (signatureElement) {
           signatureElement.addEventListener('animationend', () => {
-            signatureElement.classList.remove('animate');
+            signatureElement.remove();
           }, { once: true });
         }
 

@@ -2,7 +2,8 @@
 // Copyright (c) 2025-2026 awesomo4000
 
 const std = @import("std");
-const common = @import("../../common.zig");
+const common = @import("common");
+const diagnostics = @import("bridge_diagnostics");
 
 // C imports for GTK4 and WebKit6
 const c = @cImport({
@@ -18,15 +19,16 @@ pub const PlatformWindow = struct {
     webview: ?*c.GtkWidget = null,
     user_content_manager: ?*c.WebKitUserContentManager = null,
     message_queue: *common.MessageQueue,
+    message_handler: ?common.MessageHandler = null,
     main_loop: ?*c.GMainLoop = null,
     prng: std.Random.DefaultPrng,
+    bridge_diagnostics: bool,
 
     pub fn init(
         allocator: std.mem.Allocator,
         config: common.WindowConfig,
         message_queue: *common.MessageQueue,
     ) !PlatformWindow {
-        _ = config; // Will be used in createWindow
 
         // Suppress libEGL warnings
         _ = c.g_setenv("EGL_LOG_LEVEL", "fatal", 1);
@@ -42,6 +44,7 @@ pub const PlatformWindow = struct {
         return PlatformWindow{
             .allocator = allocator,
             .message_queue = message_queue,
+            .bridge_diagnostics = config.bridge_diagnostics,
             .prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(std.Options.debug_io).toNanoseconds())),
         };
     }
@@ -111,6 +114,10 @@ pub const PlatformWindow = struct {
         }
     }
 
+    pub fn requestClose(self: *PlatformWindow) void {
+        c.g_main_context_invoke(null, closeWindow, self);
+    }
+
     pub fn run(self: *PlatformWindow) void {
         // GTK4 uses GMainLoop
         self.main_loop = c.g_main_loop_new(null, 0);
@@ -127,6 +134,10 @@ pub const PlatformWindow = struct {
         if (self.main_loop) |loop| {
             c.g_main_loop_run(loop);
         }
+    }
+
+    pub fn setMessageHandler(self: *PlatformWindow, handler: ?common.MessageHandler) void {
+        self.message_handler = handler;
     }
 
     // Start a periodic message pump (call this after window is created)
@@ -182,7 +193,11 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
         if (i > 0) writer.writeAll(",") catch return 1;
         // Send the data as a JavaScript object, not a string
         writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data }) catch return 1;
-        std.debug.print("Sending message to JS: type={s}, data={s}\n", .{ msg.type, msg.data });
+        diagnostics.log(window.bridge_diagnostics, .{ .message = .{
+            .direction = .outbound,
+            .message_type = diagnostics.classifyMessageType(msg.type),
+            .byte_count = msg.data.len,
+        } });
     }
     writer.writeAll(");") catch return 1;
 
@@ -200,6 +215,16 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     }
 
     return 1; // Keep timer running
+}
+
+fn closeWindow(user_data: ?*anyopaque) callconv(.c) c.gboolean {
+    const window: *PlatformWindow = @ptrCast(@alignCast(user_data.?));
+    if (window.gtk_window) |gtk_window| {
+        c.gtk_window_destroy(@ptrCast(gtk_window));
+    } else if (window.main_loop) |loop| {
+        c.g_main_loop_quit(loop);
+    }
+    return c.G_SOURCE_REMOVE;
 }
 
 // Window destroy callback
@@ -229,39 +254,62 @@ fn onScriptMessage(
     // Convert to Zig string
     const message = std.mem.span(js_string);
 
-    std.debug.print("Native received JS message: {s}\n", .{message});
-
     // Parse JSON message
     if (user_data) |window_ptr| {
         const window: *PlatformWindow = @ptrCast(@alignCast(window_ptr));
+        if (window.message_handler) |handler| {
+            handler.dispatch(message);
+        }
+
 
         var arena = std.heap.ArenaAllocator.init(window.allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, message, .{}) catch |err| {
-            std.debug.print("Failed to parse JSON message: {}\n", .{err});
+            diagnostics.log(window.bridge_diagnostics, .{ .parse_failure = .{
+                .direction = .inbound,
+                .byte_count = message.len,
+                .error_class = .{ .parser = err },
+            } });
             return;
         };
         defer parsed.deinit();
 
         const root = parsed.value;
         if (root != .object) {
-            std.debug.print("Message is not a JSON object\n", .{});
+            diagnostics.log(window.bridge_diagnostics, .{ .parse_failure = .{
+                .direction = .inbound,
+                .byte_count = message.len,
+                .error_class = .invalid_root,
+            } });
             return;
         }
 
         const msg_type = root.object.get("type") orelse {
-            std.debug.print("Message missing 'type' field\n", .{});
+            diagnostics.log(window.bridge_diagnostics, .{ .parse_failure = .{
+                .direction = .inbound,
+                .byte_count = message.len,
+                .error_class = .missing_type,
+            } });
             return;
         };
 
         if (msg_type != .string) {
-            std.debug.print("Message type is not a string\n", .{});
+            diagnostics.log(window.bridge_diagnostics, .{ .parse_failure = .{
+                .direction = .inbound,
+                .byte_count = message.len,
+                .error_class = .invalid_type,
+            } });
             return;
         }
 
         const type_str = msg_type.string;
+        diagnostics.log(window.bridge_diagnostics, .{ .message = .{
+            .direction = .inbound,
+            .message_type = diagnostics.classifyMessageType(type_str),
+            .byte_count = message.len,
+        } });
 
         // Handle different message types
         if (std.mem.eql(u8, type_str, "counter_update")) {
@@ -285,12 +333,6 @@ fn onScriptMessage(
             }
         } else if (std.mem.eql(u8, type_str, "counter_reset")) {
             std.debug.print("Counter reset\n", .{});
-        } else if (std.mem.eql(u8, type_str, "custom_message")) {
-            if (root.object.get("message")) |msg| {
-                if (msg == .string) {
-                    std.debug.print("Custom message: {s}\n", .{msg.string});
-                }
-            }
         } else if (std.mem.eql(u8, type_str, "show_file_dialog")) {
             std.debug.print("File dialog requested (not implemented on Linux)\n", .{});
         } else if (std.mem.eql(u8, type_str, "turf_ready")) {
@@ -318,23 +360,10 @@ fn onScriptMessage(
                 std.debug.print("Failed to push pong message: {}\n", .{err});
                 window.allocator.free(pong_data_z);
             };
-        } else if (std.mem.eql(u8, type_str, "test")) {
-            if (root.object.get("message")) |msg| {
-                if (msg == .string) {
-                    std.debug.print("Test message received: {s}\n", .{msg.string});
-                }
-            }
         } else if (std.mem.eql(u8, type_str, "echo")) {
-            std.debug.print("Echo message received, root object keys:\n", .{});
-            var iter = root.object.iterator();
-            while (iter.next()) |entry| {
-                std.debug.print("  key: {s}\n", .{entry.key_ptr.*});
-            }
 
             if (root.object.get("message")) |msg| {
-                std.debug.print("Found message field, type: {}\n", .{msg});
                 if (msg == .string) {
-                    std.debug.print("Echo request: {s}\n", .{msg.string});
 
                     // Send echo response
                     const echo_response = std.fmt.allocPrint(window.allocator, "{{\"message\":\"Echo: {s}\"}}", .{msg.string}) catch return;
@@ -414,7 +443,6 @@ fn onScriptMessage(
 
             if (msg) |msg_value| {
                 if (msg_value == .string) {
-                    std.debug.print("Custom message: {s}\n", .{msg_value.string});
 
                     // Send custom response
                     const response = std.fmt.allocPrint(window.allocator, "{{\"message\":\"Received: {s}\"}}", .{msg_value.string}) catch return;
@@ -430,8 +458,6 @@ fn onScriptMessage(
                     };
                 }
             }
-        } else {
-            std.debug.print("Unknown message type: {s}\n", .{type_str});
         }
     }
 }

@@ -3,15 +3,10 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const common = @import("common.zig");
+const common = @import("common");
 
 // Import platform-specific backend
-const backend = switch (builtin.os.tag) {
-    .macos => @import("platforms/macos/backend.zig"),
-    .linux => @import("platforms/linux/backend.zig"),
-    .windows => @import("platforms/windows/backend.zig"),
-    else => @compileError("Unsupported platform"),
-};
+const backend = @import("backend");
 
 // JavaScript bridge code to inject (platform-specific)
 const turf_js_inject = switch (builtin.os.tag) {
@@ -52,6 +47,7 @@ const polling_js =
 pub const WindowConfig = common.WindowConfig;
 pub const Geometry = common.Geometry;
 pub const MessageQueue = common.MessageQueue;
+pub const MessageHandler = common.MessageHandler;
 
 // Window struct provides cross-platform API
 pub const Window = struct {
@@ -138,6 +134,14 @@ pub const Window = struct {
         self.platform.evalJS(script);
     }
 
+    pub fn requestClose(self: *Window) void {
+        self.platform.requestClose();
+    }
+
+    pub fn setMessageHandler(self: *Window, handler: ?MessageHandler) void {
+        self.platform.setMessageHandler(handler);
+    }
+
     pub fn sendMessage(
         self: *Window,
         message_type: []const u8,
@@ -150,7 +154,7 @@ pub const Window = struct {
         );
         defer self.allocator.free(json_data);
 
-        const json_data_z = try self.allocator.dupeZ(u8, json_data);
+        const json_data_z = try self.allocator.dupeSentinel(u8, json_data, 0);
         // Don't free json_data_z - the queue takes ownership
 
         try self.message_queue.push(message_type, json_data_z);

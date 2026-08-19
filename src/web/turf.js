@@ -7,6 +7,7 @@
 (function() {
     // Registry dictionary to store the handlers for messages
     const registry = {};
+    const pendingMessages = [];
 
     // Send a message to the native application
     function send(message) {
@@ -31,23 +32,50 @@
             
             const jsonMessage = JSON.stringify(formattedMessage);
             window.webkit.messageHandlers.__turf__.postMessage(jsonMessage);
-            console.log('Sent message to native app:', jsonMessage);
         } else {
             console.error('Native communication not available');
         }
     }
 
+    function dispatchNativeMessage(msg) {
+        if (msg.type && registry[msg.type]) {
+            registry[msg.type](msg.data);
+            return true;
+        }
+        if (registry['native_message']) {
+            registry['native_message'](msg);
+            return true;
+        }
+        return false;
+    }
+
+    function flushPendingMessages() {
+        let retained = 0;
+        for (const message of pendingMessages) {
+            if (!dispatchNativeMessage(message)) {
+                pendingMessages[retained] = message;
+                retained += 1;
+            }
+        }
+        pendingMessages.length = retained;
+    }
+
+    function registerHandler(messageType, handlerFunction) {
+        registry[messageType] = handlerFunction;
+        flushPendingMessages();
+    }
+
     // User can register handlers for events from the native app
     function onWindowGeometryChanged(handler_function) {
-        registry['window_geometry'] = handler_function;
+        registerHandler('window_geometry', handler_function);
     }
 
     function onFileSelected(handler_function) {
-        registry['file_selected'] = handler_function;
+        registerHandler('file_selected', handler_function);
     }
 
     function onMessage(message_type, handler_function) {
-        registry[message_type] = handler_function;
+        registerHandler(message_type, handler_function);
     }
 
     function nativeFileSelect() {
@@ -57,16 +85,18 @@
         });
     }
 
+    function nativeFileSave() {
+        send({
+            type: 'show_save_dialog',
+            data: null,
+        });
+    }
+
     // Internal function to handle messages from native
     function handleNativeMessage(msg) {
-        console.log('Native message received:', msg);
         
-        // Call registered handlers based on message type
-        if (msg.type && registry[msg.type]) {
-            registry[msg.type](msg.data);
-        } else if (registry['native_message']) {
-            // Fallback to generic handler
-            registry['native_message'](msg);
+        if (!dispatchNativeMessage(msg)) {
+            pendingMessages.push(msg);
         }
     }
 
@@ -77,12 +107,13 @@
         onFileSelected: onFileSelected,
         onMessage: onMessage,
         nativeFileSelect: nativeFileSelect,
+        nativeFileSave: nativeFileSave,
         _handleNativeMessage: handleNativeMessage
     };
 
     // Add the CSS and signature after DOM is ready
     function addTurfSignature() {
-        // Add the CSS keyframes for the shimmer effect
+        // Add the CSS keyframes for the signature lifecycle
         const style = document.createElement('style');
         style.textContent = `
 #turf-signature {
@@ -100,29 +131,42 @@
     linear-gradient(90deg, transparent 20%, rgba(255,255,255,0.8) 50%, transparent 80%),
     linear-gradient(90deg, #ff0000, #ff8000, #ffff00, #00ff00, #0080ff, #8000ff);
   background-size: 200% 100%, 100% 100%;
-  animation: rainbowShimmer 1.5s ease-in-out forwards;
+  animation: turfSignatureLifecycle 1.2s ease-in-out forwards;
 }
 
-@keyframes rainbowShimmer {
+@keyframes turfSignatureLifecycle {
   0% {
     background-position: -150% 0, 0 0;
     transform: scale(1);
     color: transparent;
     -webkit-background-clip: text;
     background-clip: text;
+    opacity: 1;
   }
   50% {
     transform: scale(1.15);
     color: transparent;
     -webkit-background-clip: text;
     background-clip: text;
+    opacity: 1;
+  }
+  75% {
+    background-position: 250% 0, 0 0;
+    transform: scale(1);
+    color: #666;
+    background-image: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    opacity: 1;
   }
   100% {
     background-position: 250% 0, 0 0;
     transform: scale(1);
-    color: transparent;
-    -webkit-background-clip: text;
-    background-clip: text;
+    color: #666;
+    background-image: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    opacity: 0;
   }
 }`;
         document.head.appendChild(style);
@@ -133,7 +177,7 @@
         const signatureElement = document.getElementById('turf-signature');
         if (signatureElement) {
           signatureElement.addEventListener('animationend', () => {
-            signatureElement.classList.remove('animate');
+            signatureElement.remove();
           }, { once: true });
         }
 

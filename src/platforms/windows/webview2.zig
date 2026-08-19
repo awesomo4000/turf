@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const diagnostics = @import("bridge_diagnostics");
 pub const win = std.os.windows;
 
 // Windows calling convention
@@ -243,6 +244,7 @@ pub const WebViewOptions = struct {
     url: ?[]const u8 = null,
     html: ?[]const u8 = null,
     js_inject: ?[]const u8 = null,
+    bridge_diagnostics: bool = true,
 };
 
 // High-level WebView wrapper
@@ -847,7 +849,11 @@ pub const WebView = struct {
     pub fn postMessageAsJson(self: *Self, json: []const u8) void {
         // Check if page is ready to receive messages
         if (!self.is_page_ready) {
-            std.debug.print("Page not ready yet, skipping message: {s}\n", .{json});
+            diagnostics.log(self.options.bridge_diagnostics, .{ .not_ready = .{
+                .direction = .outbound,
+                .message_type = null,
+                .byte_count = json.len,
+            } });
             return;
         }
         
@@ -887,6 +893,12 @@ pub const WebView = struct {
         // Post a message to process the queue immediately
         if (self.hwnd) |hwnd| {
             _ = PostMessageW(hwnd, WM_PROCESS_SCRIPT_QUEUE, 0, 0);
+        }
+    }
+
+    pub fn requestClose(self: *Self) void {
+        if (self.hwnd) |hwnd| {
+            _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
     }
     
@@ -1461,7 +1473,6 @@ const WebMessageReceivedHandler = extern struct {
             };
             
             const message_str = utf8_buffer[0..utf8_len];
-            std.debug.print("Received message from JavaScript: {s}\n", .{message_str});
             
             // Call the backend's message handler
             @import("backend.zig").onJavaScriptMessage(message_str);

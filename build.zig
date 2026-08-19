@@ -9,12 +9,33 @@ pub fn build(b: *std.Build) void {
 
     const target_os = target.result.os.tag;
 
+    const turf_common = b.createModule(.{
+        .root_source_file = b.path("src/common.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const bridge_diagnostics = b.createModule(.{
+        .root_source_file = b.path("src/bridge_diagnostics.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const turf_backend = b.createModule(.{
+        .root_source_file = b.path(turfBackendPath(target_os)),
+        .target = target,
+        .optimize = optimize,
+    });
+    turf_backend.addImport("common", turf_common);
+    turf_backend.addImport("bridge_diagnostics", bridge_diagnostics);
+
     // Create turf library
     const libturf = b.createModule(.{
         .root_source_file = b.path("src/turf.zig"),
         .target = target,
         .optimize = optimize,
     });
+    libturf.addImport("common", turf_common);
+    libturf.addImport("backend", turf_backend);
+
 
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -220,6 +241,17 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
+    const bridge_diagnostics_test_module = b.createModule(.{
+        .root_source_file = b.path("src/bridge_diagnostics_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bridge_diagnostics_test_module.addImport("bridge_diagnostics", bridge_diagnostics);
+    const bridge_diagnostics_tests = b.addTest(.{
+        .root_module = bridge_diagnostics_test_module,
+    });
+    const run_bridge_diagnostics_tests = b.addRunArtifact(bridge_diagnostics_tests);
+
     const exe_test_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -253,6 +285,41 @@ pub fn build(b: *std.Build) void {
     const tests_step = b.step("test", "Run unit tests");
     tests_step.dependOn(&run_lib_unit_tests.step);
     tests_step.dependOn(&run_exe_unit_tests.step);
+    tests_step.dependOn(&run_bridge_diagnostics_tests.step);
+
+    if (target_os == .macos) {
+        const ui_test_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+        });
+        ui_test_module.addCSourceFile(.{
+            .file = b.path("tests/ui/macos/reload_hover_test.m"),
+            .flags = &.{ "-fobjc-arc", "-fblocks" },
+        });
+        ui_test_module.linkFramework("Cocoa", .{});
+        ui_test_module.linkFramework("WebKit", .{});
+        ui_test_module.link_libc = true;
+
+        const ui_test = b.addExecutable(.{
+            .name = "turf-macos-ui-test",
+            .root_module = ui_test_module,
+        });
+        const run_ui_test = b.addRunArtifact(ui_test);
+        const ui_test_step = b.step(
+            "test-ui-macos",
+            "Run the offscreen macOS WebKit UI testing sample",
+        );
+        ui_test_step.dependOn(&run_ui_test.step);
+    }
+}
+
+fn turfBackendPath(target_os: std.Target.Os.Tag) []const u8 {
+    return switch (target_os) {
+        .macos => "src/platforms/macos/backend.zig",
+        .linux => "src/platforms/linux/backend.zig",
+        .windows => "src/platforms/windows/backend.zig",
+        else => @panic("unsupported Turf platform"),
+    };
 }
 
 // Add Cocoa and WebKit frameworks and compile Objective-C file

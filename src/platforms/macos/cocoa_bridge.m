@@ -9,7 +9,11 @@
 extern void onWindowEvent(int x, int y, int width, int height);
 extern void onWindowGeometryEvent(int x, int y, int width, int height);
 extern void onJavaScriptMessage(const char* message);
+extern void onWebViewNavigationStarted(unsigned long long generation);
 
+
+static BOOL terminateAfterLastWindowClosed = YES;
+static BOOL activateWindowOnShow = YES;
 
 // AppDelegate is the main app delegate that handles the app lifecycle
 @interface AppDelegate : NSObject <NSApplicationDelegate>
@@ -17,7 +21,7 @@ extern void onJavaScriptMessage(const char* message);
 
 @implementation AppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
-    return YES;
+    return terminateAfterLastWindowClosed;
 }
 @end
 
@@ -29,7 +33,45 @@ extern void onJavaScriptMessage(const char* message);
 //
 static WKWebView *webView = nil;
 static NSOpenPanel *openPanel = nil;
+static NSSavePanel *savePanel = nil;
 static BOOL isShowingFileDialog = NO;
+@interface TurfURLSchemeHandler : NSObject <WKURLSchemeHandler>
+@property (nonatomic, copy) NSData *htmlData;
+@end
+
+@implementation TurfURLSchemeHandler
+- (void)webView:(WKWebView *)webView
+        startURLSchemeTask:(id<WKURLSchemeTask>)urlSchemeTask {
+    NSURL *url = urlSchemeTask.request.URL;
+    BOOL allowedPath = [url.path isEqualToString:@"/"] ||
+                       [url.path isEqualToString:@"/index.html"];
+    if (self.htmlData == nil ||
+        ![url.host isEqualToString:@"localhost"] ||
+        !allowedPath) {
+        NSError *error = [NSError errorWithDomain:NSURLErrorDomain
+                                             code:NSURLErrorFileDoesNotExist
+                                         userInfo:nil];
+        [urlSchemeTask didFailWithError:error];
+        return;
+    }
+
+    NSURLResponse *response = [[NSURLResponse alloc]
+        initWithURL:url
+        MIMEType:@"text/html"
+        expectedContentLength:self.htmlData.length
+        textEncodingName:@"utf-8"];
+    [urlSchemeTask didReceiveResponse:response];
+    [urlSchemeTask didReceiveData:self.htmlData];
+    [urlSchemeTask didFinish];
+}
+
+- (void)webView:(WKWebView *)webView
+        stopURLSchemeTask:(id<WKURLSchemeTask>)urlSchemeTask {
+}
+@end
+
+static TurfURLSchemeHandler *appSchemeHandler = nil;
+static unsigned long long webViewNavigationGeneration = 0;
 
 // Custom WebView class to suppress beeps
 @interface TurfWebView : WKWebView
@@ -64,6 +106,13 @@ static BOOL isShowingFileDialog = NO;
     completionHandler();
 }
 
+
+- (void)webView:(WKWebView *)webView
+        didStartProvisionalNavigation:(WKNavigation *)navigation {
+    webViewNavigationGeneration += 1;
+    onWebViewNavigationStarted(webViewNavigationGeneration);
+}
+
 // Navigation delegate methods to persist zoom across reloads
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     // Reapply zoom level after page load
@@ -84,6 +133,10 @@ static BOOL isShowingFileDialog = NO;
 //
 
 @implementation TurfWebView
+- (BOOL)needsPanelToBecomeKey {
+    return YES;
+}
+
 // Override performKeyEquivalent to prevent beeps while allowing events through
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     // First, let the menu system handle standard shortcuts like Cmd+Q
@@ -94,6 +147,10 @@ static BOOL isShowingFileDialog = NO;
     // Handle zoom shortcuts
     if ([event modifierFlags] & NSEventModifierFlagCommand) {
         NSString *chars = [event charactersIgnoringModifiers];
+        if ([chars isEqualToString:@"r"] || [chars isEqualToString:@"R"]) {
+            [self reload];
+            return YES;
+        }
         
         // Cmd+= (zoom in)
         if ([chars isEqualToString:@"="] || [chars isEqualToString:@"+"]) {
@@ -112,17 +169,18 @@ static BOOL isShowingFileDialog = NO;
         }
     }
     
-    // For other command key combinations, let super handle it but return YES
-    // to prevent beeping even if not handled
-    [super performKeyEquivalent:event];
-    
-    // Always return YES for command keys to prevent beep
+    // For other command key combinations, let super handle the event once,
+    // then claim it to prevent a beep. Non-command key equivalents must
+    // continue to keyDown without first being delivered here.
     if ([event modifierFlags] & NSEventModifierFlagCommand) {
+        [super performKeyEquivalent:event];
         return YES;
     }
     
     return NO;
 }
+
+
 
 // Override noResponderFor to prevent beeps
 - (void)noResponderFor:(SEL)eventSelector {
@@ -166,9 +224,9 @@ static BOOL isShowingFileDialog = NO;
 }
 
 - (void)applyZoom {
-    // Use CSS zoom property for proper reflow
-    NSString *script = [NSString stringWithFormat:@"document.body.style.zoom = '%f'", self.currentZoomLevel];
-    [self evaluateJavaScript:script completionHandler:nil];
+    self.pageZoom = self.currentZoomLevel;
+    [self evaluateJavaScript:@"setTimeout(() => window.dispatchEvent(new Event('resize')), 0)"
+           completionHandler:nil];
 }
 @end
 
@@ -183,6 +241,19 @@ static BOOL isShowingFileDialog = NO;
     if ([self.contentView isKindOfClass:[WKWebView class]]) {
         // Return YES to indicate we've handled it (even if we haven't)
         // This prevents the system beep
+        return YES;
+    }
+    return [super performKeyEquivalent:event];
+}
+
+@end
+
+@interface TurfNonactivatingPanel : NSPanel
+@end
+
+@implementation TurfNonactivatingPanel
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    if ([self.contentView isKindOfClass:[WKWebView class]]) {
         return YES;
     }
     return [super performKeyEquivalent:event];
@@ -257,13 +328,16 @@ static void setupMainMenu(void) {
 @end
 
 
-bool NSApplicationLoad(void) {
+bool TurfApplicationLoad(int activateOnShow) {
     // Suppress WebKit console warnings
     // setenv("WKWebViewDisableRemoteViewDisplayLinkWarnings", "1", 1);
     // setenv("OS_ACTIVITY_MODE", "disable", 1);
     
+    activateWindowOnShow = activateOnShow != 0;
     [NSApplication sharedApplication];
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    [NSApp setActivationPolicy:activateWindowOnShow
+        ? NSApplicationActivationPolicyRegular
+        : NSApplicationActivationPolicyProhibited];
     
     // Set up app delegate
     AppDelegate *appDelegate = [[AppDelegate alloc] init];
@@ -274,6 +348,7 @@ bool NSApplicationLoad(void) {
     
     // Initialize the open panel
     openPanel = [NSOpenPanel openPanel];
+    savePanel = [NSSavePanel savePanel];
     [openPanel setCanChooseFiles:YES];
     [openPanel setCanChooseDirectories:NO];
     [openPanel setAllowsMultipleSelection:NO];
@@ -305,23 +380,37 @@ void NSLoadLocalFile(const char* path) {
 
 
 void NSLoadString(const char* html_content) {
-    if (webView != nil) {
-        NSString *htmlString = [NSString stringWithUTF8String:html_content];
-        [webView loadHTMLString:htmlString baseURL:nil];
+    if (webView == nil || appSchemeHandler == nil || html_content == NULL) {
+        return;
     }
+
+    NSString *htmlString = [NSString stringWithUTF8String:html_content];
+    appSchemeHandler.htmlData = [htmlString dataUsingEncoding:NSUTF8StringEncoding];
+    NSURL *url = [NSURL URLWithString:@"turf://localhost/index.html"];
+    [webView loadRequest:[NSURLRequest requestWithURL:url]];
 }
 
-void NSCreateWindow(int x, int y, int w, int h, 
-                    const char* title, const char* jsInject) {
+void NSCreateWindow(int x, int y, int w, int h,
+                    const char* title, const char* jsInject, int activateOnShow) {
+    activateWindowOnShow = activateOnShow != 0;
     NSRect frame = NSMakeRect(x, y, w, h);
-    TurfWindow* window = [[TurfWindow alloc] 
+    NSWindowStyleMask styleMask = NSWindowStyleMaskTitled |
+                                  NSWindowStyleMaskClosable |
+                                  NSWindowStyleMaskMiniaturizable |
+                                  NSWindowStyleMaskResizable;
+    Class windowClass = [TurfWindow class];
+    if (!activateWindowOnShow) {
+        styleMask |= NSWindowStyleMaskNonactivatingPanel;
+        windowClass = [TurfNonactivatingPanel class];
+    }
+    NSWindow *window = [[windowClass alloc]
         initWithContentRect:frame
-        styleMask:NSWindowStyleMaskTitled|
-                  NSWindowStyleMaskClosable|
-                  NSWindowStyleMaskMiniaturizable|
-                  NSWindowStyleMaskResizable
+        styleMask:styleMask
         backing:NSBackingStoreBuffered
         defer:NO];
+    if (!activateWindowOnShow) {
+        [(NSPanel *)window setBecomesKeyOnlyIfNeeded:YES];
+    }
     
     // Create a parent view. Webview uses this to avoid the unknown
     // subview traceback message. Add the subview to the window's content view.
@@ -331,6 +420,8 @@ void NSCreateWindow(int x, int y, int w, int h,
 
     // Create and configure WebView
     WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+    appSchemeHandler = [[TurfURLSchemeHandler alloc] init];
+    [config setURLSchemeHandler:appSchemeHandler forURLScheme:@"turf"];
     
     // Enable developer extras directly in configuration
     config.preferences.javaScriptCanOpenWindowsAutomatically = YES;
@@ -385,6 +476,12 @@ void NSCreateWindow(int x, int y, int w, int h,
     [scrollView setMagnification:1.0];
     
     // Enable layer backing for the WebView
+    SEL setInspectableSelector = NSSelectorFromString(@"setInspectable:");
+    if ([webView respondsToSelector:setInspectableSelector]) {
+        typedef void (*SetInspectableFunction)(id, SEL, BOOL);
+        SetInspectableFunction function = (SetInspectableFunction)[webView methodForSelector:setInspectableSelector];
+        function(webView, setInspectableSelector, YES);
+    }
     [webView setWantsLayer:YES];
     webView.layer.contentsScale = window.backingScaleFactor;
     
@@ -396,36 +493,97 @@ void NSCreateWindow(int x, int y, int w, int h,
 
     [parentView addSubview:webView];
     
-    // Make sure the WebView has focus
-    [window makeFirstResponder:webView];
+    // Nonactivating windows remain visible without taking key status from the
+    // application the user is currently working in.
+    if (activateWindowOnShow) {
+        [window makeFirstResponder:webView];
+    }
 
-    // Load a default URL
-    NSURL *url = [NSURL URLWithString:@"about:blank"];
-    NSURLRequest *request = [NSURLRequest requestWithURL:url];
-    [webView loadRequest:request];
-    
     // Set webView as the window's content view
     [window setContentView:parentView];
     [window setTitle:[NSString stringWithUTF8String:title]];
     [window setDelegate:windowDelegate];
-    [window makeKeyAndOrderFront:nil];
-    [window center];
+    if (activateWindowOnShow) {
+        [window makeKeyAndOrderFront:nil];
+        [window center];
+    }
+}
+
+void NSRequestWindowClose(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        terminateAfterLastWindowClosed = NO;
+        [[webView window] orderOut:nil];
+        [NSApp stop:nil];
+        NSEvent *wakeEvent = [NSEvent
+            otherEventWithType:NSEventTypeApplicationDefined
+            location:NSZeroPoint
+            modifierFlags:0
+            timestamp:0
+            windowNumber:0
+            context:nil
+            subtype:0
+            data1:0
+            data2:0];
+        [NSApp postEvent:wakeEvent atStart:NO];
+    });
 }
 
 void NSRunApplication(void) {
-    [NSApp activateIgnoringOtherApps:YES];
+    if (activateWindowOnShow) {
+        [NSApp activateIgnoringOtherApps:YES];
+    } else {
+        [NSApp finishLaunching];
+        [[webView window] orderFront:nil];
+        [[webView window] center];
+    }
     [NSApp run];
 }
 
 void NSEvaluateJavaScript(const char* script) {
-    if (webView != nil) {
-        NSString *jsString = [NSString stringWithUTF8String:script];
+    if (script == NULL) {
+        return;
+    }
+    NSString *jsString = [NSString stringWithUTF8String:script];
+    if (jsString == nil) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (webView == nil) {
+            return;
+        }
         [webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
             if (error) {
                 NSLog(@"Error evaluating JavaScript: %@", error);
             }
         }];
+    });
+}
+
+bool NSEvaluateJavaScriptForGeneration(const char* script, unsigned long long generation) {
+    if (script == NULL) {
+        return false;
     }
+    NSString *jsString = [NSString stringWithUTF8String:script];
+    if (jsString == nil) {
+        return false;
+    }
+
+    __block BOOL delivered = NO;
+    dispatch_semaphore_t completion = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (webView == nil || generation != webViewNavigationGeneration) {
+            dispatch_semaphore_signal(completion);
+            return;
+        }
+        [webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
+            delivered = error == nil && generation == webViewNavigationGeneration &&
+                        [result respondsToSelector:@selector(boolValue)] && [result boolValue];
+            dispatch_semaphore_signal(completion);
+        }];
+    });
+
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
+    return dispatch_semaphore_wait(completion, timeout) == 0 && delivered;
 }
 
 void NSShowOpenFileDialog(void) {
@@ -455,10 +613,35 @@ void NSShowOpenFileDialog(void) {
                 NSString *path = selectedFile.path;
                 NSLog(@"Selected file: %@", path);
                 
-                // Create a JSON message with the file path
-                NSString *jsonMsg = 
-                [NSString stringWithFormat:
-                @"{\"type\":\"native_file_selected\",\"path\":\"%@\"}", path];
+                NSDictionary *message = @{@"type": @"native_file_selected", @"path": path};
+                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:message options:0 error:nil];
+                NSString *jsonMsg = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+                onJavaScriptMessage([jsonMsg UTF8String]);
+            }
+        }];
+    });
+}
+
+void NSShowSaveFileDialog(void) {
+    NSLog(@"Showing save file dialog");
+    if (isShowingFileDialog || savePanel == nil || webView == nil) {
+        return;
+    }
+
+    NSWindow *window = [webView window];
+    if (window == nil) {
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        isShowingFileDialog = YES;
+        [savePanel beginSheetModalForWindow:window completionHandler:^(NSModalResponse result) {
+            isShowingFileDialog = NO;
+            if (result == NSModalResponseOK) {
+                NSString *path = savePanel.URL.path;
+                NSDictionary *message = @{@"type": @"native_file_destination", @"path": path};
+                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:message options:0 error:nil];
+                NSString *jsonMsg = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
                 onJavaScriptMessage([jsonMsg UTF8String]);
             }
         }];
