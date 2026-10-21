@@ -112,16 +112,15 @@ static BOOL isShowingFileDialog = NO;
         }
     }
     
-    // For other command key combinations, let super handle it but return YES
-    // to prevent beeping even if not handled
-    [super performKeyEquivalent:event];
+    // Preserve WebKit's result so handled events are not dispatched again.
+    BOOL handled = [super performKeyEquivalent:event];
     
     // Always return YES for command keys to prevent beep
     if ([event modifierFlags] & NSEventModifierFlagCommand) {
         return YES;
     }
     
-    return NO;
+    return handled;
 }
 
 // Override noResponderFor to prevent beeps
