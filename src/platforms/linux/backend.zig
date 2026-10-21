@@ -131,10 +131,10 @@ pub const PlatformWindow = struct {
 
     // Start a periodic message pump (call this after window is created)
     pub fn startMessagePump(self: *PlatformWindow, interval_ms: u32) void {
-        std.debug.print("Linux: Starting message pump with interval {}ms\n", .{interval_ms});
+        std.log.debug("Linux: Starting message pump with interval {}ms", .{interval_ms});
         // Try using g_timeout_add_full with default priority
         const timer_id = c.g_timeout_add_full(c.G_PRIORITY_DEFAULT, interval_ms, @ptrCast(&messagePumpCallback), self, null);
-        std.debug.print("Linux: Timer ID: {}\n", .{timer_id});
+        std.log.debug("Linux: Timer ID: {}", .{timer_id});
     }
 };
 
@@ -165,7 +165,7 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
 
     if (messages.items.len == 0) return 1; // Keep timer running
 
-    std.debug.print("Processing {} messages from queue\n", .{messages.items.len});
+    std.log.debug("Processing {} messages from queue", .{messages.items.len});
 
     // Build JavaScript to inject messages
     var arena = std.heap.ArenaAllocator.init(window.allocator);
@@ -182,7 +182,7 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
         if (i > 0) writer.writeAll(",") catch return 1;
         // Send the data as a JavaScript object, not a string
         writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data }) catch return 1;
-        std.debug.print("Sending message to JS: type={s}, data={s}\n", .{ msg.type, msg.data });
+        std.log.debug("Sending message to JS: type={s}, data={s}", .{ msg.type, msg.data });
     }
     writer.writeAll(");") catch return 1;
 
@@ -229,7 +229,7 @@ fn onScriptMessage(
     // Convert to Zig string
     const message = std.mem.span(js_string);
 
-    std.debug.print("Native received JS message: {s}\n", .{message});
+    std.log.debug("Native received JS message: {s}", .{message});
 
     // Parse JSON message
     if (user_data) |window_ptr| {
@@ -267,7 +267,7 @@ fn onScriptMessage(
         if (std.mem.eql(u8, type_str, "counter_update")) {
             if (root.object.get("value")) |value| {
                 if (value == .integer) {
-                    std.debug.print("Counter updated to: {}\n", .{value.integer});
+                    std.log.debug("Counter updated to: {}", .{value.integer});
                     // Send echo back to JS
                     const echo_data = std.fmt.allocPrint(window.allocator, "{{\"value\":{}}}", .{value.integer}) catch return;
                     const echo_data_z = window.allocator.dupeZ(u8, echo_data) catch {
@@ -284,19 +284,19 @@ fn onScriptMessage(
                 }
             }
         } else if (std.mem.eql(u8, type_str, "counter_reset")) {
-            std.debug.print("Counter reset\n", .{});
+            std.log.debug("Counter reset", .{});
         } else if (std.mem.eql(u8, type_str, "custom_message")) {
             if (root.object.get("message")) |msg| {
                 if (msg == .string) {
-                    std.debug.print("Custom message: {s}\n", .{msg.string});
+                    std.log.debug("Custom message: {s}", .{msg.string});
                 }
             }
         } else if (std.mem.eql(u8, type_str, "show_file_dialog")) {
             std.debug.print("File dialog requested (not implemented on Linux)\n", .{});
         } else if (std.mem.eql(u8, type_str, "turf_ready")) {
-            std.debug.print("Turf ready!\n", .{});
+            std.log.debug("Turf ready!", .{});
         } else if (std.mem.eql(u8, type_str, "ping")) {
-            std.debug.print("Ping received, sending pong...\n", .{});
+            std.log.debug("Ping received, sending pong...", .{});
 
             // Message queue is always valid (it's a pointer to the Window's queue)
 
@@ -321,20 +321,20 @@ fn onScriptMessage(
         } else if (std.mem.eql(u8, type_str, "test")) {
             if (root.object.get("message")) |msg| {
                 if (msg == .string) {
-                    std.debug.print("Test message received: {s}\n", .{msg.string});
+                    std.log.debug("Test message received: {s}", .{msg.string});
                 }
             }
         } else if (std.mem.eql(u8, type_str, "echo")) {
-            std.debug.print("Echo message received, root object keys:\n", .{});
+            std.log.debug("Echo message received, root object keys:", .{});
             var iter = root.object.iterator();
             while (iter.next()) |entry| {
-                std.debug.print("  key: {s}\n", .{entry.key_ptr.*});
+                std.log.debug("  key: {s}", .{entry.key_ptr.*});
             }
 
             if (root.object.get("message")) |msg| {
-                std.debug.print("Found message field, type: {}\n", .{msg});
+                std.log.debug("Found message field, type: {}", .{msg});
                 if (msg == .string) {
-                    std.debug.print("Echo request: {s}\n", .{msg.string});
+                    std.log.debug("Echo request: {s}", .{msg.string});
 
                     // Send echo response
                     const echo_response = std.fmt.allocPrint(window.allocator, "{{\"message\":\"Echo: {s}\"}}", .{msg.string}) catch return;
@@ -355,7 +355,7 @@ fn onScriptMessage(
                 std.debug.print("No message field found in echo request\n", .{});
             }
         } else if (std.mem.eql(u8, type_str, "get_time")) {
-            std.debug.print("Time requested\n", .{});
+            std.log.debug("Time requested", .{});
 
             // Get current time and format it
             const timestamp = std.Io.Clock.real.now(std.Options.debug_io).toSeconds();
@@ -414,7 +414,7 @@ fn onScriptMessage(
 
             if (msg) |msg_value| {
                 if (msg_value == .string) {
-                    std.debug.print("Custom message: {s}\n", .{msg_value.string});
+                    std.log.debug("Custom message: {s}", .{msg_value.string});
 
                     // Send custom response
                     const response = std.fmt.allocPrint(window.allocator, "{{\"message\":\"Received: {s}\"}}", .{msg_value.string}) catch return;

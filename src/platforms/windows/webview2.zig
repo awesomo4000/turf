@@ -298,7 +298,7 @@ pub const WebView = struct {
     const Self = @This();
     
     pub fn init(allocator: std.mem.Allocator, options: WebViewOptions) !*Self {
-        std.debug.print("WebView2.init called\n", .{});
+        std.log.debug("WebView2.init called", .{});
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
         
@@ -311,9 +311,9 @@ pub const WebView = struct {
             .script_queue = .empty,
             .js_inject = options.js_inject,
         };
-        std.debug.print("WebView2 struct initialized\n", .{});
+        std.log.debug("WebView2 struct initialized", .{});
         if (options.js_inject) |js| {
-            std.debug.print("WebView2 received {} bytes of JavaScript to inject\n", .{js.len});
+            std.log.debug("WebView2 received {} bytes of JavaScript to inject", .{js.len});
         }
         
         // Initialize handler vtables
@@ -644,19 +644,19 @@ pub const WebView = struct {
             
             // Then release the controller
             const ref_count = controller.vtable.Release(controller);
-            std.debug.print("Controller released, ref_count: {}\n", .{ref_count});
+            std.log.debug("Controller released, ref_count: {}", .{ref_count});
             self.controller = null;
         }
         
         if (self.webview) |webview| {
             const ref_count = webview.vtable.Release(webview);
-            std.debug.print("WebView released, ref_count: {}\n", .{ref_count});
+            std.log.debug("WebView released, ref_count: {}", .{ref_count});
             self.webview = null;
         }
         
         if (self.environment) |environment| {
             const ref_count = environment.vtable.Release(environment);
-            std.debug.print("Environment released, ref_count: {}\n", .{ref_count});
+            std.log.debug("Environment released, ref_count: {}", .{ref_count});
             self.environment = null;
         }
         
@@ -691,7 +691,7 @@ pub const WebView = struct {
             const js_content = self.js_inject orelse "";
             
             if (js_content.len == 0) {
-                std.debug.print("No JavaScript to inject\n", .{});
+                std.log.debug("No JavaScript to inject", .{});
                 return;
             }
             
@@ -699,13 +699,13 @@ pub const WebView = struct {
             const actual_len = std.mem.indexOfScalar(u8, js_content, 0) orelse js_content.len;
             const clean_content = js_content[0..actual_len];
             
-            std.debug.print("Injecting {} bytes of JavaScript (cleaned from {})\n", .{clean_content.len, js_content.len});
+            std.log.debug("Injecting {} bytes of JavaScript (cleaned from {})", .{clean_content.len, js_content.len});
             if (clean_content.len < 100) {
                 std.debug.print("WARNING: JavaScript content appears truncated! First few bytes: ", .{});
                 for (clean_content[0..@min(clean_content.len, 10)]) |byte| {
-                    std.debug.print("{x:0>2} ", .{byte});
+                    std.log.debug("{x:0>2} ", .{byte});
                 }
-                std.debug.print("\n", .{});
+                std.log.debug("", .{});
             }
             
             // First inject a simple test to verify injection works
@@ -731,7 +731,7 @@ pub const WebView = struct {
                 return;
             }
             
-            std.debug.print("Test script injected successfully, now injecting main script\n", .{});
+            std.log.debug("Test script injected successfully, now injecting main script", .{});
             
             // Allocate a large static buffer for UTF-16 conversion
             const utf16_buffer = self.allocator.alloc(u16, clean_content.len * 2) catch {
@@ -747,7 +747,7 @@ pub const WebView = struct {
             };
             utf16_buffer[js_len] = 0;
             
-            std.debug.print("Converted {} bytes to {} UTF-16 code units\n", .{clean_content.len, js_len});
+            std.log.debug("Converted {} bytes to {} UTF-16 code units", .{clean_content.len, js_len});
             
             // Execute the script
             const result = wv.vtable.ExecuteScript(
@@ -779,7 +779,7 @@ pub const WebView = struct {
                 
                 _ = wv.vtable.ExecuteScript(wv, @ptrCast(&fallback_utf16), null);
             } else {
-                std.debug.print("Main script injected successfully!\n", .{});
+                std.log.debug("Main script injected successfully!", .{});
             }
         }
     }
@@ -847,7 +847,7 @@ pub const WebView = struct {
     pub fn postMessageAsJson(self: *Self, json: []const u8) void {
         // Check if page is ready to receive messages
         if (!self.is_page_ready) {
-            std.debug.print("Page not ready yet, skipping message: {s}\n", .{json});
+            std.log.debug("Page not ready yet, skipping message: {s}", .{json});
             return;
         }
         
@@ -1148,7 +1148,7 @@ const ControllerHandler = extern struct {
             );
             if (nav_starting_result == S_OK) {
                 self.parent.nav_starting_token = nav_starting_token;
-                std.debug.print("add_NavigationStarting succeeded\n", .{});
+                std.log.debug("add_NavigationStarting succeeded", .{});
             } else {
                 std.debug.print("add_NavigationStarting failed: 0x{x}\n", .{@as(u32, @bitCast(nav_starting_result))});
             }
@@ -1162,7 +1162,7 @@ const ControllerHandler = extern struct {
             );
             if (content_loading_result == S_OK) {
                 self.parent.content_loading_token = content_loading_token;
-                std.debug.print("add_ContentLoading succeeded\n", .{});
+                std.log.debug("add_ContentLoading succeeded", .{});
             } else {
                 std.debug.print("add_ContentLoading failed: 0x{x}\n", .{@as(u32, @bitCast(content_loading_result))});
             }
@@ -1176,7 +1176,7 @@ const ControllerHandler = extern struct {
             );
             if (source_changed_result == S_OK) {
                 self.parent.source_changed_token = source_changed_token;
-                std.debug.print("add_SourceChanged succeeded\n", .{});
+                std.log.debug("add_SourceChanged succeeded", .{});
             } else {
                 std.debug.print("add_SourceChanged failed: 0x{x}\n", .{@as(u32, @bitCast(source_changed_result))});
             }
@@ -1190,7 +1190,7 @@ const ControllerHandler = extern struct {
             );
             if (nav_handler_result == S_OK) {
                 self.parent.nav_completed_token = token;
-                std.debug.print("add_NavigationCompleted succeeded\n", .{});
+                std.log.debug("add_NavigationCompleted succeeded", .{});
             } else {
                 std.debug.print("add_NavigationCompleted failed: 0x{x}\n", .{@as(u32, @bitCast(nav_handler_result))});
             }
@@ -1204,7 +1204,7 @@ const ControllerHandler = extern struct {
             );
             if (msg_handler_result == S_OK) {
                 self.parent.msg_received_token = msg_token;
-                std.debug.print("add_WebMessageReceived succeeded\n", .{});
+                std.log.debug("add_WebMessageReceived succeeded", .{});
             } else {
                 std.debug.print("add_WebMessageReceived failed: 0x{x}\n", .{@as(u32, @bitCast(msg_handler_result))});
             }
@@ -1222,7 +1222,7 @@ const ControllerHandler = extern struct {
             
             // Navigate to content
             if (self.parent.url) |url| {
-                std.debug.print("Navigating to URL from options: {s}\n", .{url});
+                std.log.debug("Navigating to URL from options: {s}", .{url});
                 // Navigate to URL
                 var url_utf16_buffer: [4096]u16 = undefined;
                 const url_len = std.unicode.utf8ToUtf16Le(&url_utf16_buffer, url) catch {
@@ -1231,7 +1231,7 @@ const ControllerHandler = extern struct {
                 };
                 url_utf16_buffer[url_len] = 0;
                 const nav_result = webview.?.vtable.Navigate(webview.?, @ptrCast(&url_utf16_buffer));
-                std.debug.print("Navigate result: 0x{x}\n", .{@as(u32, @bitCast(nav_result))});
+                std.log.debug("Navigate result: 0x{x}", .{@as(u32, @bitCast(nav_result))});
             } else if (self.parent.options.html) |html| {
                 // Navigate to HTML string
                 var html_utf16_buffer: [32768]u16 = undefined;
@@ -1288,7 +1288,7 @@ const NavigationCompletedHandler = extern struct {
 
     fn invoke(self: *NavigationCompletedHandler, sender: *ICoreWebView2, args: *anyopaque) callconv(WINAPI) HRESULT {
         _ = args;
-        std.debug.print("NavigationCompleted event fired\n", .{});
+        std.log.debug("NavigationCompleted event fired", .{});
         
         // Mark page as ready
         self.parent.is_page_ready = true;
@@ -1331,7 +1331,7 @@ const NavigationStartingHandler = extern struct {
     fn invoke(self: *NavigationStartingHandler, sender: *ICoreWebView2, args: *anyopaque) callconv(WINAPI) HRESULT {
         _ = sender;
         _ = args;
-        std.debug.print("NavigationStarting event fired\n", .{});
+        std.log.debug("NavigationStarting event fired", .{});
         
         // Reset page ready flag when starting new navigation
         self.parent.is_page_ready = false;
@@ -1372,7 +1372,7 @@ const ContentLoadingHandler = extern struct {
         _ = self;
         _ = sender;
         _ = args;
-        std.debug.print("ContentLoading event fired - DOM is ready\n", .{});
+        std.log.debug("ContentLoading event fired - DOM is ready", .{});
         
         return S_OK;
     }
@@ -1410,7 +1410,7 @@ const SourceChangedHandler = extern struct {
         _ = self;
         _ = sender;
         _ = args;
-        std.debug.print("SourceChanged event fired\n", .{});
+        std.log.debug("SourceChanged event fired", .{});
         
         return S_OK;
     }
@@ -1461,7 +1461,7 @@ const WebMessageReceivedHandler = extern struct {
             };
             
             const message_str = utf8_buffer[0..utf8_len];
-            std.debug.print("Received message from JavaScript: {s}\n", .{message_str});
+            std.log.debug("Received message from JavaScript: {s}", .{message_str});
             
             // Call the backend's message handler
             @import("backend.zig").onJavaScriptMessage(message_str);

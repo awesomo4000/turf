@@ -49,6 +49,9 @@ zig build test
 ### Usage
 
 ```bash
+# Show usage
+./zig-out/bin/turf --help
+
 # Launch with default page
 ./zig-out/bin/turf
 
@@ -58,6 +61,24 @@ zig build test
 # Open a local file
 ./zig-out/bin/turf path/to/file.html
 ```
+
+### Startup logo API
+
+Set `WindowConfig.startup_logo` when creating a window:
+
+```zig
+const config: turf.WindowConfig = .{
+    .geometry = .{ .x = 100, .y = 100, .width = 600, .height = 800 },
+    .title = "My app",
+    .startup_logo = .in_out,
+};
+```
+
+- `.off` is the default and hides the bottom-right Turf logo.
+- `.in_out` plays the rainbow animation, returns to gray, then fades out and removes the logo.
+- `.stay` plays the rainbow animation and leaves the gray logo visible.
+
+The setting applies whenever a page loads in the window. It is available only through the Zig API.
 
 ## Keyboard Shortcuts
 

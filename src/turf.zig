@@ -50,6 +50,7 @@ const polling_js =
 
 // Re-export common types
 pub const WindowConfig = common.WindowConfig;
+pub const StartupLogo = common.StartupLogo;
 pub const Geometry = common.Geometry;
 pub const MessageQueue = common.MessageQueue;
 
@@ -91,8 +92,8 @@ pub const Window = struct {
         // Combine turf.js with polling mechanism - ensure null termination
         const js_code = std.fmt.allocPrintSentinel(
             self.allocator,
-            "{s}\n{s}",
-            .{ turf_js_inject, polling_js },
+            "(function() {{ const startupLogo = '{s}';\n{s}\n{s}\n}})();",
+            .{ @tagName(self.config.startup_logo), turf_js_inject, polling_js },
             0,
         ) catch {
             // If allocation fails, use just the turf.js

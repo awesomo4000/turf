@@ -69,8 +69,8 @@ pub const PlatformWindow = struct {
     }
 
     pub fn createWindow(self: *Self, config: common.WindowConfig, js_inject_code: [:0]const u8) void {
-        std.debug.print("Windows backend: createWindow called\n", .{});
-        std.debug.print("Windows backend: Received {} bytes of JavaScript to inject\n", .{js_inject_code.len});
+        std.log.debug("Windows backend: createWindow called", .{});
+        std.log.debug("Windows backend: Received {} bytes of JavaScript to inject", .{js_inject_code.len});
         self.config = config;
         
         // Copy the JavaScript code since the caller might free it
@@ -82,7 +82,7 @@ pub const PlatformWindow = struct {
         
         // Store the JavaScript to inject later
         // Window creation happens in run()
-        std.debug.print("Windows backend: Window config stored, actual creation deferred to run()\n", .{});
+        std.log.debug("Windows backend: Window config stored, actual creation deferred to run()", .{});
     }
 
     pub fn show(self: *Self) void {
@@ -100,7 +100,7 @@ pub const PlatformWindow = struct {
         _ = base_uri; // WebView2 doesn't use base_uri for data URIs
         
         const html_slice = std.mem.sliceTo(html, 0);
-        std.debug.print("Windows backend: loadHTML called with {} bytes of HTML\n", .{html_slice.len});
+        std.log.debug("Windows backend: loadHTML called with {} bytes of HTML", .{html_slice.len});
         
         if (self.webview) |wv| {
             // If WebView exists, navigate now
@@ -116,11 +116,11 @@ pub const PlatformWindow = struct {
                 return;
             };
             
-            std.debug.print("Windows backend: Navigating to data URI\n", .{});
+            std.log.debug("Windows backend: Navigating to data URI", .{});
             wv.navigate(data_uri_z);
         } else {
             // Store HTML for later when WebView is created
-            std.debug.print("Windows backend: Storing HTML for later\n", .{});
+            std.log.debug("Windows backend: Storing HTML for later", .{});
             self.initial_html = self.allocator.dupe(u8, html_slice) catch {
                 std.debug.print("Failed to store HTML\n", .{});
                 return;
@@ -139,7 +139,7 @@ pub const PlatformWindow = struct {
     }
 
     pub fn run(self: *Self) void {
-        std.debug.print("Windows backend: run() called\n", .{});
+        std.log.debug("Windows backend: run() called", .{});
         
         // Set global reference for message handling now that we have a stable pointer
         global_platform_window = self;
@@ -154,31 +154,31 @@ pub const PlatformWindow = struct {
             .js_inject = blk: {
                 const js = if (self.js_inject_code.len > 0) self.js_inject_code else null;
                 if (js) |j| {
-                    std.debug.print("Backend passing {} bytes of JS to WebView2\n", .{j.len});
+                    std.log.debug("Backend passing {} bytes of JS to WebView2", .{j.len});
                     if (j.len > 0) {
-                        std.debug.print("First few bytes: ", .{});
+                        std.log.debug("First few bytes: ", .{});
                         for (j[0..@min(j.len, 10)]) |byte| {
-                            std.debug.print("{x:0>2} ", .{byte});
+                            std.log.debug("{x:0>2} ", .{byte});
                         }
-                        std.debug.print("\n", .{});
+                        std.log.debug("", .{});
                     }
                 }
                 break :blk js;
             },
         };
         
-        std.debug.print("Windows backend: Creating WebView2 in run()\n", .{});
+        std.log.debug("Windows backend: Creating WebView2 in run()", .{});
         self.webview = webview2.WebView.init(self.allocator, options) catch |err| {
             std.debug.print("Failed to create WebView2: {}\n", .{err});
             return;
         };
         
         if (self.webview) |wv| {
-            std.debug.print("Windows backend: Starting WebView2 message loop\n", .{});
+            std.log.debug("Windows backend: Starting WebView2 message loop", .{});
             wv.run() catch |err| {
                 std.debug.print("WebView2 run failed: {}\n", .{err});
             };
-            std.debug.print("Windows backend: WebView2 message loop ended\n", .{});
+            std.log.debug("Windows backend: WebView2 message loop ended", .{});
         }
     }
 
@@ -310,6 +310,6 @@ fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
             try window.message_queue.push("custom_response", response);
         }
     } else if (std.mem.eql(u8, msg_type.string, "turf_ready")) {
-        std.debug.print("Turf JavaScript ready\n", .{});
+        std.log.debug("Turf JavaScript ready", .{});
     }
 }

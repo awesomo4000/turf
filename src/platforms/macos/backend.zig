@@ -27,7 +27,6 @@ var global_platform_window: ?*PlatformWindow = null;
 // JavaScript message handler callback
 pub export fn onJavaScriptMessage(message: [*c]const u8) void {
     const msg = std.mem.span(message);
-    std.debug.print("Native received JS message: {s}\n", .{msg});
 
     // Parse the JSON message
     if (global_platform_window) |window| {
@@ -95,7 +94,10 @@ fn handleJavaScriptMessage(window: *PlatformWindow, msg: []const u8) !void {
 
 // Window geometry event callback
 pub export fn onWindowGeometryEvent(x: c_int, y: c_int, width: c_int, height: c_int) void {
-    std.debug.print("Window geometry changed: x={}, y={}, w={}, h={}\n", .{ x, y, width, height });
+    _ = x;
+    _ = y;
+    _ = width;
+    _ = height;
 }
 
 // Platform implementation
@@ -209,7 +211,6 @@ pub const PlatformWindow = struct {
         try writer.writeAll(");");
 
         const js_code = try arena_allocator.dupeZ(u8, js_array.written());
-        std.debug.print("macOS: Sending JS: {s}\n", .{js_code});
         self.evalJS(js_code);
     }
 };

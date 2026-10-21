@@ -4,8 +4,30 @@
 const std = @import("std");
 const turf = @import("turf.zig");
 
+// Keep backend tracing quiet in normal runs, including Debug builds.
+pub const std_options: std.Options = .{ .log_level = .info };
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
+
+    // Process command line arguments
+    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    defer args.deinit();
+    _ = args.next(); // skip program name
+    const target = args.next();
+    if (target) |arg| {
+        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [URL or file path]\n" ++
+                "       turf -h | --help\n\n" ++
+                "With no arguments, opens the default page.\n\n" ++
+                "Examples:\n" ++
+                "  turf\n" ++
+                "  turf https://example.com\n" ++
+                "  turf index.html\n" ++
+                "  turf /path/to/file.html\n");
+            return;
+        }
+    }
 
     // Create message queue externally
     var message_queue = turf.MessageQueue.init(allocator);
@@ -32,12 +54,7 @@ pub fn main(init: std.process.Init) !void {
     // Create window first
     window.createWindow();
 
-    // Process command line arguments
-    var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
-    defer args.deinit();
-    _ = args.next(); // skip program name
-
-    if (args.next()) |arg| {
+    if (target) |arg| {
         if (std.mem.startsWith(
             u8,
             arg,
@@ -57,13 +74,6 @@ pub fn main(init: std.process.Init) !void {
             try window.loadFile(path_z);
         }
     } else {
-        // No argument provided - show usage or load default page
-        std.debug.print("Usage: turf [URL or file path]\n", .{});
-        std.debug.print("Examples:\n", .{});
-        std.debug.print("  turf https://example.com\n", .{});
-        std.debug.print("  turf index.html\n", .{});
-        std.debug.print("  turf /path/to/file.html\n", .{});
-
         // Load a default page
         const welcome_html: [:0]const u8 =
             \\<!DOCTYPE html>

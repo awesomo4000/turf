@@ -11,10 +11,18 @@ pub const Geometry = struct {
     height: i32,
 };
 
+/// Controls the bottom-right logo on each page load.
+pub const StartupLogo = enum {
+    off,
+    in_out,
+    stay,
+};
+
 // Common window configuration
 pub const WindowConfig = struct {
     geometry: Geometry,
     title: [:0]const u8,
+    startup_logo: StartupLogo = .off,
 };
 
 // Message structure for queuing

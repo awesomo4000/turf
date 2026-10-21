@@ -80,8 +80,11 @@
         _handleNativeMessage: handleNativeMessage
     };
 
+    const logoMode = typeof startupLogo === 'undefined' ? 'off' : startupLogo;
+
     // Add the CSS and signature after DOM is ready
     function addTurfSignature() {
+        if (logoMode === 'off') return;
         // Add the CSS keyframes for the shimmer effect
         const style = document.createElement('style');
         style.textContent = `
@@ -101,6 +104,14 @@
     linear-gradient(90deg, #ff0000, #ff8000, #ffff00, #00ff00, #0080ff, #8000ff);
   background-size: 200% 100%, 100% 100%;
   animation: rainbowShimmer 1.5s ease-in-out forwards;
+}
+
+#turf-signature.disappear {
+  animation: turfDisappear 0.4s ease-out 0.2s forwards;
+}
+
+@keyframes turfDisappear {
+  to { opacity: 0; }
 }
 
 @keyframes rainbowShimmer {
@@ -134,9 +145,20 @@
         if (signatureElement) {
           signatureElement.addEventListener('animationend', () => {
             signatureElement.classList.remove('animate');
+            if (logoMode === 'in_out') {
+              signatureElement.classList.add('disappear');
+              signatureElement.addEventListener('animationend', () => {
+                signatureElement.remove();
+                style.remove();
+              }, { once: true });
+            }
           }, { once: true });
         }
 
+    }
+
+    function onReady() {
+        addTurfSignature();
         window.turf.send({
             type: 'turf_ready',
             data: 'At your service!'
@@ -145,10 +167,10 @@
 
     // Wait for DOM to be ready before adding signature
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', addTurfSignature);
+        document.addEventListener('DOMContentLoaded', onReady, { once: true });
     } else {
         // DOM is already ready
-        addTurfSignature();
+        onReady();
     }
 
     // Listen for messages from the native application (WebView2 approach)
