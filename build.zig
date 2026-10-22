@@ -64,6 +64,7 @@ pub fn build(b: *std.Build) void {
     // Platform-specific executable configuration
     switch (target_os) {
         .macos => {
+            addMacOSSDK(b, exe.root_module);
             exe.root_module.linkFramework("Cocoa", .{});
             exe.root_module.linkFramework("WebKit", .{});
             exe.root_module.addCSourceFile(.{
@@ -147,6 +148,7 @@ pub fn build(b: *std.Build) void {
 
     switch (target_os) {
         .macos => {
+            addMacOSSDK(b, demo.root_module);
             demo.root_module.linkFramework("Cocoa", .{});
             demo.root_module.linkFramework("WebKit", .{});
             demo.root_module.addCSourceFile(.{
@@ -301,3 +303,13 @@ pub fn build(b: *std.Build) void {
 //     test_step.dependOn(&run_lib_unit_tests.step);
 //     test_step.dependOn(&run_exe_unit_tests.step);
 // }
+
+// Zig does not automatically discover SDK paths when cross-compiling macOS.
+fn addMacOSSDK(b: *std.Build, module: *std.Build.Module) void {
+    if (b.sysroot) |sdk| {
+        module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+        module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
+        // The linker resolves this path relative to --sysroot.
+        module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    }
+}

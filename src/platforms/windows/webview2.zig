@@ -1016,8 +1016,15 @@ pub const WebView = struct {
 };
 
 // Additional Windows APIs needed
-pub extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: i32, dwNewLong: isize) callconv(WINAPI) isize;
-pub extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: i32) callconv(WINAPI) isize;
+// Win32 headers alias the pointer-sized APIs to the Long exports on 32-bit Windows.
+const window_long = struct {
+    extern "user32" fn SetWindowLongW(hWnd: HWND, nIndex: i32, dwNewLong: i32) callconv(WINAPI) i32;
+    extern "user32" fn GetWindowLongW(hWnd: HWND, nIndex: i32) callconv(WINAPI) i32;
+    extern "user32" fn SetWindowLongPtrW(hWnd: HWND, nIndex: i32, dwNewLong: isize) callconv(WINAPI) isize;
+    extern "user32" fn GetWindowLongPtrW(hWnd: HWND, nIndex: i32) callconv(WINAPI) isize;
+};
+pub const SetWindowLongPtrW = if (@sizeOf(usize) == 4) window_long.SetWindowLongW else window_long.SetWindowLongPtrW;
+pub const GetWindowLongPtrW = if (@sizeOf(usize) == 4) window_long.GetWindowLongW else window_long.GetWindowLongPtrW;
 pub extern "user32" fn DestroyWindow(hWnd: HWND) callconv(WINAPI) BOOL;
 pub const GWLP_USERDATA = -21;
 pub const WM_CREATE = 0x0001;

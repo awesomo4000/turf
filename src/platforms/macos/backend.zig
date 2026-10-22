@@ -5,7 +5,7 @@ const std = @import("std");
 const common = @import("../../common.zig");
 
 // External Cocoa bridge functions declared in cocoa_bridge.m
-extern fn NSApplicationLoad() bool;
+extern fn TurfApplicationLoad() bool;
 extern fn NSCreateWindow(
     x: c_int,
     y: c_int,
@@ -113,7 +113,7 @@ pub const PlatformWindow = struct {
 
     pub fn init(allocator: std.mem.Allocator, config: common.WindowConfig, message_queue: *common.MessageQueue) !PlatformWindow {
         // Initialize the Cocoa application
-        if (!NSApplicationLoad()) {
+        if (!TurfApplicationLoad()) {
             return error.CocoaInitFailed;
         }
 

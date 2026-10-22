@@ -46,6 +46,16 @@ zig build run-demo
 zig build test
 ```
 
+To cross-build Intel macOS from Apple Silicon, pass a compatible SDK explicitly:
+
+```bash
+zig build -Dtarget=x86_64-macos --sysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
+```
+
+Windows cross-build targets are `x86_64-windows`, `aarch64-windows`, and
+`x86-windows`. Linux builds need target-compatible GTK4 and WebKitGTK 6 development
+libraries; macOS Homebrew libraries cannot satisfy those dependencies.
+
 ### Usage
 
 ```bash

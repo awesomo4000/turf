@@ -282,7 +282,7 @@ static void setupMainMenu(void) {
 @end
 
 
-bool NSApplicationLoad(void) {
+bool TurfApplicationLoad(void) {
     // Suppress WebKit console warnings
     // setenv("WKWebViewDisableRemoteViewDisplayLinkWarnings", "1", 1);
     // setenv("OS_ACTIVITY_MODE", "disable", 1);
