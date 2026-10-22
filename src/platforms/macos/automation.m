@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <math.h>
 
 static const NSUInteger maxRequestBytes = 1024 * 1024;
 static const NSUInteger maxResponseBytes = 32 * 1024 * 1024;
@@ -54,6 +55,60 @@ static NSData *responseData(id requestID, id result, NSInteger code, NSString *m
     NSMutableData *line = [json mutableCopy];
     [line appendBytes:"\n" length:1];
     return line;
+}
+
+// Coordinates are webview points from the top-left, independent of screen scale.
+static BOOL automationNumber(id value) {
+    return [value isKindOfClass:NSNumber.class] &&
+        CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID() && isfinite([value doubleValue]);
+}
+
+static BOOL automationModifiers(id values, NSEventModifierFlags *flags) {
+    *flags = 0;
+    if (!values) return YES;
+    if (![values isKindOfClass:NSArray.class]) return NO;
+    NSDictionary *names = @{ @"shift": @(NSEventModifierFlagShift), @"control": @(NSEventModifierFlagControl),
+        @"alt": @(NSEventModifierFlagOption), @"meta": @(NSEventModifierFlagCommand) };
+    for (id value in values) {
+        if (![value isKindOfClass:NSString.class] || !names[value]) return NO;
+        *flags |= [names[value] unsignedIntegerValue];
+    }
+    return YES;
+}
+
+// Named navigation keys and US-layout printable keys. Unicode text uses typeText.
+static BOOL automationKey(NSString *key, NSString **characters, unsigned short *code, BOOL *function) {
+    NSDictionary *named = @{
+        @"ArrowLeft": @[@(NSLeftArrowFunctionKey), @123], @"ArrowRight": @[@(NSRightArrowFunctionKey), @124],
+        @"ArrowDown": @[@(NSDownArrowFunctionKey), @125], @"ArrowUp": @[@(NSUpArrowFunctionKey), @126],
+        @"Home": @[@(NSHomeFunctionKey), @115], @"End": @[@(NSEndFunctionKey), @119],
+        @"PageUp": @[@(NSPageUpFunctionKey), @116], @"PageDown": @[@(NSPageDownFunctionKey), @121],
+        @"Delete": @[@(NSDeleteFunctionKey), @117], @"Backspace": @[@127, @51],
+        @"Enter": @[@13, @36], @"Tab": @[@9, @48], @"Escape": @[@27, @53], @"Space": @[@32, @49]
+    };
+    NSArray *entry = named[key];
+    if (entry) {
+        unichar character = [entry[0] unsignedShortValue];
+        *characters = [NSString stringWithCharacters:&character length:1];
+        *code = [entry[1] unsignedShortValue]; *function = character >= 0xF700;
+        return YES;
+    }
+    NSDictionary *codes = @{ @"a": @0, @"s": @1, @"d": @2, @"f": @3, @"h": @4, @"g": @5,
+        @"z": @6, @"x": @7, @"c": @8, @"v": @9, @"b": @11, @"q": @12, @"w": @13,
+        @"e": @14, @"r": @15, @"y": @16, @"t": @17, @"1": @18, @"2": @19, @"3": @20,
+        @"4": @21, @"6": @22, @"5": @23, @"=": @24, @"9": @25, @"7": @26, @"-": @27,
+        @"8": @28, @"0": @29, @"]": @30, @"o": @31, @"u": @32, @"[": @33, @"i": @34,
+        @"p": @35, @"l": @37, @"j": @38, @"'": @39, @"k": @40, @";": @41, @"\\": @42,
+        @",": @43, @"/": @44, @"n": @45, @"m": @46, @".": @47, @"`": @50, @" ": @49 };
+    NSString *base = key.lowercaseString;
+    NSString *shifted = @"~!@#$%^&*()_+{}|:\"<>?";
+    NSString *unshifted = @"`1234567890-=[]\\;',./";
+    NSRange index = [shifted rangeOfString:key];
+    if (key.length == 1 && index.location != NSNotFound) base = [unshifted substringWithRange:NSMakeRange(index.location, 1)];
+    NSNumber *number = codes[base];
+    if (!number) return NO;
+    *characters = key; *code = number.unsignedShortValue; *function = NO;
+    return YES;
 }
 
 @implementation TurfAutomationServer
@@ -183,7 +238,10 @@ static NSData *responseData(id requestID, id result, NSInteger code, NSString *m
     if ([method isEqual:@"info"]) {
         reply(@{ @"protocolVersion": @1, @"pid": @(getpid()), @"engine": @"WKWebView",
             @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
-            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"close"] }, 0, nil);
+            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"click", @"key", @"typeText", @"close"],
+            @"capabilities": @{ @"nativeInput": @"appkit", @"awaitPromises": @YES, @"screenshot": @"viewport",
+                @"maxRequestBytes": @(maxRequestBytes), @"maxResponseBytes": @(maxResponseBytes) },
+            @"viewport": @{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) } }, 0, nil);
     } else if ([method isEqual:@"evaluate"]) {
         if (![params[@"expression"] isKindOfClass:NSString.class]) { reply(nil, -32602, @"expression must be a string"); return; }
         if (@available(macOS 11.0, *)) {
@@ -239,6 +297,78 @@ static NSData *responseData(id requestID, id result, NSInteger code, NSString *m
         [view.window setContentSize:NSMakeSize([width doubleValue], [height doubleValue])];
         [view.window.contentView layoutSubtreeIfNeeded];
         reply(@{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) }, 0, nil);
+    } else if ([method isEqual:@"click"]) {
+        id x = params[@"x"], y = params[@"y"];
+        NSEventModifierFlags modifiers;
+        if (!automationNumber(x) || !automationNumber(y) ||
+            !automationModifiers(params[@"modifiers"], &modifiers) ||
+            [x doubleValue] < 0 || [y doubleValue] < 0 ||
+            [x doubleValue] >= view.bounds.size.width || [y doubleValue] >= view.bounds.size.height) {
+            reply(nil, -32602, @"click requires x/y inside the viewport and valid modifiers"); return;
+        }
+        NSWindow *window = view.window;
+        [window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+        NSPoint point = NSMakePoint([x doubleValue], view.isFlipped ? [y doubleValue] : view.bounds.size.height - [y doubleValue]);
+        point = [view convertPoint:point toView:nil];
+        NSTimeInterval timestamp = NSProcessInfo.processInfo.systemUptime;
+        NSEvent *down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:point modifierFlags:modifiers
+            timestamp:timestamp windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+        NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:point modifierFlags:modifiers
+            timestamp:timestamp + 0.01 windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:0];
+        // Queue mouse-up first so native controls with tracking loops can consume it.
+        [NSApp postEvent:up atStart:NO];
+        [NSApp sendEvent:down];
+        reply(@{ @"dispatched": @YES }, 0, nil);
+    } else if ([method isEqual:@"key"]) {
+        NSString *key = params[@"key"], *characters = nil;
+        NSEventModifierFlags modifiers;
+        unsigned short code = 0; BOOL function = NO;
+        id repeat = params[@"repeat"];
+        if (![key isKindOfClass:NSString.class] || !automationKey(key, &characters, &code, &function) ||
+            !automationModifiers(params[@"modifiers"], &modifiers) ||
+            (repeat && CFGetTypeID((__bridge CFTypeRef)repeat) != CFBooleanGetTypeID())) {
+            reply(nil, -32602, @"Unsupported key or modifiers; use typeText for Unicode text"); return;
+        }
+        if (function) modifiers |= NSEventModifierFlagFunction | NSEventModifierFlagNumericPad;
+        if (key.length == 1 && (![key isEqual:key.lowercaseString] || [@"~!@#$%^&*()_+{}|:\"<>?" containsString:key])) {
+            modifiers |= NSEventModifierFlagShift;
+        }
+        if (modifiers & NSEventModifierFlagShift) {
+            NSString *unshifted = @"`1234567890-=[]\\;',./";
+            NSString *shifted = @"~!@#$%^&*()_+{}|:\"<>?";
+            NSRange index = [unshifted rangeOfString:characters];
+            characters = characters.length == 1 && index.location != NSNotFound
+                ? [shifted substringWithRange:NSMakeRange(index.location, 1)] : characters.uppercaseString;
+        }
+        NSString *unmodified = characters;
+        if ((modifiers & NSEventModifierFlagControl) && characters.length == 1) {
+            unichar c = [characters.lowercaseString characterAtIndex:0];
+            if (c >= 'a' && c <= 'z') { c -= 'a' - 1; characters = [NSString stringWithCharacters:&c length:1]; }
+        }
+        NSWindow *window = view.window;
+        [window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+        NSTimeInterval timestamp = NSProcessInfo.processInfo.systemUptime;
+        for (NSNumber *kind in @[@(NSEventTypeKeyDown), @(NSEventTypeKeyUp)]) {
+            NSEvent *event = [NSEvent keyEventWithType:kind.unsignedIntegerValue location:NSZeroPoint modifierFlags:modifiers
+                timestamp:timestamp windowNumber:window.windowNumber context:nil characters:characters
+                charactersIgnoringModifiers:unmodified isARepeat:kind.unsignedIntegerValue == NSEventTypeKeyDown && [repeat boolValue] keyCode:code];
+            [NSApp sendEvent:event];
+        }
+        reply(@{ @"dispatched": @YES }, 0, nil);
+    } else if ([method isEqual:@"typeText"]) {
+        NSString *text = params[@"text"];
+        if (![text isKindOfClass:NSString.class] || text.length > 16384) {
+            reply(nil, -32602, @"text must be a string of at most 16384 UTF-16 code units"); return;
+        }
+        NSResponder *target = view.window.firstResponder;
+        if (![target isKindOfClass:NSView.class] || ![(NSView *)target isDescendantOf:view] ||
+            ![target respondsToSelector:@selector(insertText:replacementRange:)]) {
+            reply(nil, -32004, @"Focus a text field in the webview first"); return;
+        }
+        [(id<NSTextInputClient>)target insertText:text replacementRange:NSMakeRange(NSNotFound, 0)];
+        reply(@{ @"dispatched": @YES }, 0, nil);
     } else if ([method isEqual:@"close"]) {
         self.closeRequested = YES;
         reply(@{ @"closing": @YES }, 0, nil);

@@ -138,17 +138,20 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 
 | Method | Parameters | Result |
 | --- | --- | --- |
-| `info` | None | Protocol version, PID, engine, page title, URL, loading state, and methods |
+| `info` | None | Protocol version, PID, engine, page title, URL, loading state, methods, capabilities, and viewport dimensions |
 | `evaluate` | `expression` string | `{type, value}` after awaiting promises; `undefined` omits `value` |
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
 | `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
+| `click` | `x`, `y` in webview points from the top-left; optional `modifiers` | Dispatches a native left click |
+| `key` | `key`; optional `modifiers` and boolean `repeat` | Dispatches native key-down and key-up events |
+| `typeText` | `text` | Inserts Unicode text through the native text-input interface |
 | `close` | None | `{closing: true}`, followed by closing the window |
 
 Evaluation runs in the main frame and page world and requires macOS 11 or newer.
 Values use JavaScript JSON serialization: cycles and BigInts produce errors;
 non-finite numbers become null, and function/undefined object properties are
-omitted. Object handles, native input, cross-origin frame selection, and debugger
+omitted. Object handles, cross-origin frame selection, and debugger
 breakpoints are not part of this protocol.
 
 Commands execute sequentially, with one active client connection at a time.
@@ -158,6 +161,62 @@ idle request has a 10-second read deadline. Operations and response writes have
 result is discarded. Requests are limited to 1 MiB and responses to 32 MiB.
 A navigation response means the page finished loading, not that application
 fetches, fonts, or rendering have settled; use evaluation to wait for app readiness.
+
+#### Grab binary data
+
+The Python client implements `grab` through chunked `evaluate` calls. `grab` is
+not a socket method. The source may be an HTTP(S), blob, or data URL, or JavaScript
+that returns a URL, base64 string, data URI, Blob, ArrayBuffer, or typed array.
+Promises are awaited. Browser origin and content-security rules still apply.
+
+```bash
+python3 tools/turf-client.py /path/to/control.sock grab \
+  '{"source":"document.querySelector(\"img\").currentSrc"}' -o /tmp/otter.jpg
+python3 tools/turf-client.py /path/to/control.sock grab \
+  '{"source":"document.querySelector(\"canvas\").toDataURL()"}' -o /tmp/canvas.png
+```
+
+Data stays in a temporary page object and is read in 256 KiB binary chunks, each
+encoded separately as base64. The client writes chunks to a temporary file next
+to the destination and replaces the destination only after the transfer succeeds.
+It cleans up the page object on success and failure; abandoned objects expire
+after two minutes of inactivity. Navigation destroys the transfer state and
+causes an error. This bounds response and client-buffer sizes, but the complete
+Blob still occupies memory in the webview. Keep `grab.js` beside `turf-client.py`
+when copying the client elsewhere.
+
+#### Native input
+
+`click` and `key` deliver AppKit events to Turf's window through `NSApplication`.
+They do not call DOM `.click()` or construct JavaScript keyboard events. They
+activate the window and may change application focus. This is application-local
+synthesis, not system-wide hardware input or IME emulation; no Accessibility
+permission or SIP change is needed. A response acknowledges dispatch, not the
+completion of JavaScript event handlers. Poll the relevant page state afterward.
+
+```bash
+python3 tools/turf-client.py /path/to/control.sock click '{"x":100,"y":120}'
+python3 tools/turf-client.py /path/to/control.sock key '{"key":"ArrowDown"}'
+python3 tools/turf-client.py /path/to/control.sock key '{"key":"ArrowRight","modifiers":["shift"]}'
+python3 tools/turf-client.py /path/to/control.sock key '{"key":"a","modifiers":["meta"]}'
+python3 tools/turf-client.py /path/to/control.sock typeText '{"text":"Hello, otter 🦦"}'
+```
+
+Modifiers are `shift`, `control`, `alt`, and `meta`, which map to macOS Shift,
+Control, Option, and Command. Supported keys are printable US-layout ASCII,
+`ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `PageUp`,
+`PageDown`, `Delete`, `Backspace`, `Enter`, `Tab`, `Escape`, and `Space`.
+`repeat: true` marks the key-down as a repeat; it does not hold the key down.
+Use `typeText` for Unicode strings. It inserts into the focused native text client
+without generating a key event per character. Turf now provides standard Edit
+menu actions for select-all, cut, copy, paste, undo, and redo.
+
+Click coordinates are viewport points, not screenshot pixels. Retina screenshots
+can have twice as many pixels per axis. When deriving coordinates from DOM client
+rectangles, account for the ratio between `info.viewport` dimensions and
+`window.innerWidth` / `window.innerHeight`, and scroll the element into view first.
+Only a single left click is currently supported; drag, right-click, and held-key
+sequences are not implemented.
 
 Run the integration checks from a macOS GUI session:
 
