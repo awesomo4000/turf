@@ -4,12 +4,7 @@
 const std = @import("std");
 const common = @import("../../common.zig");
 
-// C imports for GTK4 and WebKit6
-const c = @cImport({
-    @cInclude("gtk/gtk.h");
-    @cInclude("webkit/webkit.h");
-    @cInclude("jsc/jsc.h");
-});
+const c = @import("bindings.zig");
 
 // Platform implementation
 pub const PlatformWindow = struct {
@@ -50,7 +45,7 @@ pub const PlatformWindow = struct {
         _ = self;
     }
 
-    pub fn createWindow(self: *PlatformWindow, config: common.WindowConfig, turf_js: []const u8) void {
+    pub fn createWindow(self: *PlatformWindow, config: common.WindowConfig, turf_js: [:0]const u8) void {
 
         // Create GTK4 window
         self.gtk_window = c.gtk_window_new() orelse return;
@@ -172,7 +167,7 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var js_buffer: std.Io.Writer.Allocating = .initCapacity(allocator, 1024) catch return 1;
+    var js_buffer: std.Io.Writer.Allocating = std.Io.Writer.Allocating.initCapacity(allocator, 1024) catch return 1;
     defer js_buffer.deinit();
     const writer = &js_buffer.writer;
 
@@ -222,8 +217,7 @@ fn onScriptMessage(
     _ = content_manager;
 
     // Convert to string
-    const js_string = c.jsc_value_to_string(js_value);
-    if (js_string == null) return;
+    const js_string = c.jsc_value_to_string(js_value) orelse return;
     defer c.g_free(js_string);
 
     // Convert to Zig string

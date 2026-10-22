@@ -56,6 +56,10 @@ Windows cross-build targets are `x86_64-windows`, `aarch64-windows`, and
 `x86-windows`. Linux builds need target-compatible GTK4 and WebKitGTK 6 development
 libraries; macOS Homebrew libraries cannot satisfy those dependencies.
 
+Linux uses explicit public C ABI declarations to avoid Zig 0.16 GTK header
+translation failures. Check these declarations against the installed development
+headers with `python3 tests/linux_abi.py`; this requires `cc` and `pkg-config`.
+
 ### Usage
 
 ```bash
