@@ -109,6 +109,8 @@ the window and before entering its event loop:
 ```zig
 window.createWindow();
 try window.startAutomation("/absolute/private-directory/control.sock");
+// For background automation instead:
+// try window.startAutomationWithOptions("/absolute/private-directory/control.sock", .{ .background = true });
 try window.run();
 // window.deinit() stops automation; window.stopAutomation() can stop it earlier.
 ```
@@ -187,10 +189,28 @@ when copying the client elsewhere.
 
 #### Native input
 
-`click` and `key` deliver AppKit events to Turf's window through `NSApplication`.
-They do not call DOM `.click()` or construct JavaScript keyboard events. They
-activate the window and may change application focus. This is application-local
-synthesis, not system-wide hardware input or IME emulation; no Accessibility
+`click` and `key` deliver AppKit events to the target view and window's responder
+chain. By default, startup, clicks, and key events activate Turf for interactive use.
+Use `--no-focus` to show the window without activating it, with or without an
+automation socket. For example:
+
+```bash
+./zig-out/bin/turf --no-focus --automation-socket /path/to/control.sock
+./zig-out/bin/turf --no-focus https://example.com
+```
+
+Embedders can set `WindowConfig.no_focus = true` for both startup and automation,
+or pass `.{ .background = true }` to `startAutomationWithOptions` before `run()`
+for background automation only. `startAutomation` keeps the default foreground
+behavior unless the window has `no_focus` enabled. `info.background` reports the
+effective automation mode. These options currently support macOS; requesting
+`no_focus` on another platform returns `NoFocusUnsupported`.
+
+Input does not call DOM `.click()` or construct JavaScript keyboard events.
+The window remains visible; this is not headless mode.
+Native dialogs and other operations requiring foreground interaction are not
+covered by the background input checks. This is application-local synthesis,
+not system-wide hardware input or IME emulation; no Accessibility
 permission or SIP change is needed. A response acknowledges dispatch, not the
 completion of JavaScript event handlers. Poll the relevant page state afterward.
 
@@ -226,6 +246,9 @@ python3 tests/automation_macos.py
 
 These checks launch the actual system WKWebView and use disposable files under
 `/tmp`, including a check that an existing file cannot be overwritten by startup.
+They compile a passive foreground-app observer with `clang` and fail if the test
+Turf process becomes foreground during startup, input, or shutdown. The observer
+creates no window and does not activate any application.
 
 ## Keyboard Shortcuts
 

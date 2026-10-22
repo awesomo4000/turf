@@ -32,6 +32,7 @@ extern void onJavaScriptMessage(const char* message);
 // isShowingFileDialog is a flag to track if the file dialog is showing
 //
 static WKWebView *webView = nil;
+static BOOL windowNoFocus = NO;
 static NSOpenPanel *openPanel = nil;
 static BOOL isShowingFileDialog = NO;
 
@@ -336,7 +337,8 @@ void NSLoadString(const char* html_content) {
 }
 
 void NSCreateWindow(int x, int y, int w, int h, 
-                    const char* title, const char* jsInject) {
+                    const char* title, const char* jsInject, bool no_focus) {
+    windowNoFocus = no_focus;
     NSRect frame = NSMakeRect(x, y, w, h);
     TurfWindow* window = [[TurfWindow alloc] 
         initWithContentRect:frame
@@ -432,12 +434,15 @@ void NSCreateWindow(int x, int y, int w, int h,
     [window setContentView:parentView];
     [window setTitle:[NSString stringWithUTF8String:title]];
     [window setDelegate:windowDelegate];
-    [window makeKeyAndOrderFront:nil];
+    [window orderBack:nil];
     [window center];
 }
 
 void NSRunApplication(void) {
-    [NSApp activateIgnoringOtherApps:YES];
+    if (!windowNoFocus && !TurfAutomationIsBackground()) {
+        [webView.window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+    }
     [NSApp run];
 }
 
@@ -489,8 +494,8 @@ void NSShowOpenFileDialog(void) {
     });
 }
 
-int NSStartAutomation(const char *path) {
-    return TurfAutomationStart(webView, path);
+int NSStartAutomation(const char *path, bool background) {
+    return TurfAutomationStart(webView, path, background);
 }
 void NSStopAutomation(void) {
     TurfAutomationStop();

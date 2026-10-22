@@ -13,6 +13,7 @@ extern fn NSCreateWindow(
     h: c_int,
     title: [*:0]const u8,
     js_inject: [*:0]const u8,
+    no_focus: bool,
 ) void;
 extern fn NSRunApplication() void;
 extern fn NSLoadURL(url: [*:0]const u8) void;
@@ -20,7 +21,7 @@ extern fn NSLoadLocalFile(path: [*:0]const u8) void;
 extern fn NSLoadString(html_content: [*:0]const u8) void;
 extern fn NSEvaluateJavaScript(script: [*:0]const u8) void;
 extern fn NSShowOpenFileDialog() void;
-extern fn NSStartAutomation(path: [*:0]const u8) c_int;
+extern fn NSStartAutomation(path: [*:0]const u8, background: bool) c_int;
 extern fn NSStopAutomation() void;
 
 // Global reference to the platform window for message handling
@@ -141,14 +142,15 @@ pub const PlatformWindow = struct {
                 config.geometry.height,
                 config.title,
                 @ptrCast(turf_js.ptr),
+                config.no_focus,
             );
             self.is_window_created = true;
         }
     }
 
-    pub fn startAutomation(self: *PlatformWindow, socket_path: [:0]const u8) !void {
+    pub fn startAutomation(self: *PlatformWindow, socket_path: [:0]const u8, background: bool) !void {
         if (!self.is_window_created) return error.WindowNotCreated;
-        const result = NSStartAutomation(socket_path);
+        const result = NSStartAutomation(socket_path, background);
         if (result != 0) {
             std.log.err("Cannot start automation socket: errno {d}", .{result});
             return error.AutomationStartFailed;

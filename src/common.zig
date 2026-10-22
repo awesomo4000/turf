@@ -23,6 +23,8 @@ pub const WindowConfig = struct {
     geometry: Geometry,
     title: [:0]const u8,
     startup_logo: StartupLogo = .off,
+    /// Show without activating the application. Currently supported on macOS.
+    no_focus: bool = false,
 };
 
 // Message structure for queuing

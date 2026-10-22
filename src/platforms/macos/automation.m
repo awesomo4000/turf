@@ -17,6 +17,7 @@ typedef void (^AutomationReply)(id result, NSInteger code, NSString *message);
 
 @interface TurfAutomationServer : NSObject
 @property (atomic) BOOL stopped;
+@property (nonatomic) BOOL background;
 @property (atomic) BOOL closeRequested;
 @property (nonatomic, strong) WKWebView *view;
 @property (nonatomic, copy) NSString *path;
@@ -74,6 +75,20 @@ static BOOL automationModifiers(id values, NSEventModifierFlags *flags) {
         *flags |= [names[value] unsignedIntegerValue];
     }
     return YES;
+}
+
+// Resolve menu shortcuts against this window instead of the application's key window.
+static BOOL automationMenuKey(NSMenu *menu, NSEvent *event, NSResponder *responder) {
+    NSEventModifierFlags mask = NSEventModifierFlagCommand | NSEventModifierFlagShift |
+        NSEventModifierFlagControl | NSEventModifierFlagOption;
+    for (NSMenuItem *item in menu.itemArray) {
+        if (item.submenu && automationMenuKey(item.submenu, event, responder)) return YES;
+        if (item.keyEquivalent.length && [item.keyEquivalent.lowercaseString isEqual:event.charactersIgnoringModifiers.lowercaseString] &&
+            (item.keyEquivalentModifierMask & mask) == (event.modifierFlags & mask) && !item.target && item.action) {
+            return [responder tryToPerform:item.action with:item];
+        }
+    }
+    return NO;
 }
 
 // Named navigation keys and US-layout printable keys. Unicode text uses typeText.
@@ -237,7 +252,7 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     WKWebView *view = self.view;
     if ([method isEqual:@"info"]) {
         reply(@{ @"protocolVersion": @1, @"pid": @(getpid()), @"engine": @"WKWebView",
-            @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
+            @"background": @(self.background), @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
             @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"click", @"key", @"typeText", @"close"],
             @"capabilities": @{ @"nativeInput": @"appkit", @"awaitPromises": @YES, @"screenshot": @"viewport",
                 @"maxRequestBytes": @(maxRequestBytes), @"maxResponseBytes": @(maxResponseBytes) },
@@ -307,8 +322,10 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
             reply(nil, -32602, @"click requires x/y inside the viewport and valid modifiers"); return;
         }
         NSWindow *window = view.window;
-        [window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+        if (!self.background) {
+            [window makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        }
         NSPoint point = NSMakePoint([x doubleValue], view.isFlipped ? [y doubleValue] : view.bounds.size.height - [y doubleValue]);
         point = [view convertPoint:point toView:nil];
         NSTimeInterval timestamp = NSProcessInfo.processInfo.systemUptime;
@@ -316,9 +333,10 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
             timestamp:timestamp windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
         NSEvent *up = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:point modifierFlags:modifiers
             timestamp:timestamp + 0.01 windowNumber:window.windowNumber context:nil eventNumber:1 clickCount:1 pressure:0];
-        // Queue mouse-up first so native controls with tracking loops can consume it.
-        [NSApp postEvent:up atStart:NO];
-        [NSApp sendEvent:down];
+        NSView *target = [view hitTest:[view.superview convertPoint:point fromView:nil]];
+        [window makeFirstResponder:target];
+        [target mouseDown:down];
+        [target mouseUp:up];
         reply(@{ @"dispatched": @YES }, 0, nil);
     } else if ([method isEqual:@"key"]) {
         NSString *key = params[@"key"], *characters = nil;
@@ -347,14 +365,19 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
             if (c >= 'a' && c <= 'z') { c -= 'a' - 1; characters = [NSString stringWithCharacters:&c length:1]; }
         }
         NSWindow *window = view.window;
-        [window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+        if (!self.background) {
+            [window makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        }
         NSTimeInterval timestamp = NSProcessInfo.processInfo.systemUptime;
         for (NSNumber *kind in @[@(NSEventTypeKeyDown), @(NSEventTypeKeyUp)]) {
             NSEvent *event = [NSEvent keyEventWithType:kind.unsignedIntegerValue location:NSZeroPoint modifierFlags:modifiers
                 timestamp:timestamp windowNumber:window.windowNumber context:nil characters:characters
                 charactersIgnoringModifiers:unmodified isARepeat:kind.unsignedIntegerValue == NSEventTypeKeyDown && [repeat boolValue] keyCode:code];
-            [NSApp sendEvent:event];
+            if (kind.unsignedIntegerValue == NSEventTypeKeyDown) {
+                if (!automationMenuKey(NSApp.mainMenu, event, window.firstResponder) &&
+                    ![window performKeyEquivalent:event]) [window.firstResponder keyDown:event];
+            } else [window.firstResponder keyUp:event];
         }
         reply(@{ @"dispatched": @YES }, 0, nil);
     } else if ([method isEqual:@"typeText"]) {
@@ -376,7 +399,9 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
 }
 @end
 
-int TurfAutomationStart(WKWebView *view, const char *path) {
+BOOL TurfAutomationIsBackground(void) { return automationServer.background; }
+
+int TurfAutomationStart(WKWebView *view, const char *path, bool background) {
     if (![NSThread isMainThread] || !view || !view.window) return EINVAL;
     if (automationServer) return EALREADY;
     NSString *socketPath = [[NSFileManager defaultManager] stringWithFileSystemRepresentation:path length:strlen(path)];
@@ -398,6 +423,7 @@ int TurfAutomationStart(WKWebView *view, const char *path) {
     fcntl(fd, F_SETFL, O_NONBLOCK);
     fcntl(fd, F_SETFD, FD_CLOEXEC);
     TurfAutomationServer *server = [TurfAutomationServer new];
+    server.background = background;
     server.view = view; server.path = socketPath; server.listener = fd;
     server.socketInode = st.st_ino; server.socketDevice = st.st_dev;
     automationServer = server;

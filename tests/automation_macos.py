@@ -5,6 +5,7 @@
 import base64
 import importlib.util
 import json
+import os
 import hashlib
 import socket
 import struct
@@ -125,7 +126,7 @@ def feature_checks(path, folder):
     assert evaluate("Object.keys(window).filter(k=>k.startsWith('__turfGrab_')).length") == 0
 
 
-def main():
+def run_checks(check_focus):
     binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "zig-out/bin/turf"
     with tempfile.TemporaryDirectory(prefix="turf-automation-", dir="/tmp") as directory:
         folder = Path(directory)
@@ -133,7 +134,7 @@ def main():
         page.write_text('<!doctype html><title>Automation fixture</title><h1 id="heading">Hello</h1><select id="choices" size="3"><option>One</option><option>Two</option><option>Three</option></select><button id="button">Click</button><textarea id="editor" rows="8">First line\nSecond line\nThird line</textarea>')
         path = folder / "control.sock"
         with (folder / "stderr.log").open("w+") as errors:
-            process = subprocess.Popen([str(binary), "--automation-socket", str(path), str(page)], stdout=subprocess.PIPE, stderr=errors)
+            process = subprocess.Popen([str(binary), "--automation-socket", str(path), "--no-focus", str(page)], stdout=subprocess.PIPE, stderr=errors)
             try:
                 deadline = time.monotonic() + 15
                 while not path.exists():
@@ -143,6 +144,8 @@ def main():
                     time.sleep(0.05)
                 assert path.stat().st_mode & 0o777 == 0o600
                 info = client.request(path, "info")
+                check_focus(process.pid, "startup")
+                assert info["background"] is True
                 assert info["engine"] == "WKWebView" and info["protocolVersion"] == 1
                 client.request(path, "navigate", {"url": page.as_uri()})
                 result = client.request(path, "evaluate", {"expression": "({title: document.title, text: document.querySelector('h1').textContent})"})
@@ -157,6 +160,7 @@ def main():
                 expect_error(path, "navigate", {"url": "relative.html"}, -32602)
                 expect_error(path, "evaluate", {}, -32602)
                 feature_checks(path, folder)
+                check_focus(process.pid, "native input and grab")
                 size = client.request(path, "resize", {"width": 420, "height": 320})
                 assert size == {"width": 420, "height": 320}, size
                 png = client.request(path, "screenshot")
@@ -185,6 +189,7 @@ def main():
                 assert client.request(path, "info")["engine"] == "WKWebView"
                 assert client.request(path, "close") == {"closing": True}
                 assert process.wait(timeout=10) == 0
+                check_focus(process.pid, "shutdown")
                 assert not path.exists(), "Socket was not cleaned up"
                 assert process.stdout.read() == b"", "Normal startup should remain quiet"
             finally:
@@ -197,6 +202,80 @@ def main():
         assert result.returncode != 0
         assert path.read_text() == "keep this test file"
     print("Passed real WKWebView automation, protocol, PNG, and safe-path checks.")
+
+
+def main():
+    # Observe the existing foreground app without activating a helper window.
+    with tempfile.TemporaryDirectory(prefix="turf-focus-", dir="/tmp") as directory:
+        folder = Path(directory)
+        guard = folder / "guard"
+        marker = folder / "focus"
+        subprocess.run(["clang", "-fobjc-arc", "-framework", "Cocoa",
+                        str(ROOT / "tests/automation_focus_guard.m"), "-o", str(guard)],
+                       env={**os.environ, "TMPDIR": directory}, check=True)
+        log = marker.open("w")
+        process = subprocess.Popen([str(guard)], stdout=log)
+        try:
+            for _ in range(100):
+                if marker.exists() and marker.stat().st_size:
+                    break
+                time.sleep(0.05)
+            assert process.poll() is None, "Focus monitor exited"
+            initial = json.loads(marker.read_text().splitlines()[0])
+            print(f"Foreground before launch: {initial['name']} ({initial['pid']})", flush=True)
+            def check_focus(pid, stage):
+                time.sleep(0.05)
+                assert process.poll() is None, "Focus monitor exited"
+                entries = [json.loads(line) for line in marker.read_text().split("\n")[:-1]]
+                print(f"Foreground after {stage}: {entries[-1]['name']} ({entries[-1]['pid']}); Turf PID {pid}", flush=True)
+                assert not any(entry['pid'] == pid for entry in entries), entries
+            run_checks(check_focus)
+            print("No Turf activation detected throughout startup, input, and shutdown.")
+            # --no-focus also works without an automation endpoint.
+            binary = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "zig-out/bin/turf"
+            plain = subprocess.Popen([str(binary), "--no-focus"])
+            try:
+                time.sleep(2)
+                assert plain.poll() is None
+                check_focus(plain.pid, "startup without automation")
+            finally:
+                plain.terminate()
+                plain.wait(timeout=5)
+            # Foreground remains the default for interactive automation.
+            endpoint = folder / "foreground.sock"
+            foreground = subprocess.Popen([str(binary), "--automation-socket", str(endpoint)])
+            try:
+                for _ in range(100):
+                    if endpoint.exists():
+                        break
+                    time.sleep(0.05)
+                assert client.request(endpoint, "info")["background"] is False
+                for _ in range(100):
+                    entries = [json.loads(line) for line in marker.read_text().split("\n")[:-1]]
+                    if any(entry['pid'] == foreground.pid for entry in entries):
+                        break
+                    time.sleep(0.05)
+                assert any(entry['pid'] == foreground.pid for entry in entries), "Default startup did not activate"
+                client.request(endpoint, "navigate", {"url": "about:blank"})
+                client.request(endpoint, "evaluate", {"expression": "document.body.innerHTML='<button onclick=\"window.clicked=true\">Click</button>'; document.body.style.margin='0'"})
+                client.request(endpoint, "click", {"x": 10, "y": 10})
+                for _ in range(100):
+                    if client.request(endpoint, "evaluate", {"expression": "window.clicked === true"})["value"]:
+                        break
+                    time.sleep(0.02)
+                assert client.request(endpoint, "evaluate", {"expression": "window.clicked === true"})["value"]
+                client.request(endpoint, "close")
+                assert foreground.wait(timeout=10) == 0
+                print("Default interactive automation activated Turf and delivered a native click.")
+            finally:
+                if foreground.poll() is None:
+                    foreground.terminate()
+                    foreground.wait(timeout=5)
+
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+            log.close()
 
 
 if __name__ == "__main__":

@@ -54,6 +54,11 @@ pub const StartupLogo = common.StartupLogo;
 pub const Geometry = common.Geometry;
 pub const MessageQueue = common.MessageQueue;
 
+pub const AutomationOptions = struct {
+    /// Keep startup and automated input from activating the window.
+    background: bool = false,
+};
+
 // Window struct provides cross-platform API
 pub const Window = struct {
     allocator: std.mem.Allocator,
@@ -67,6 +72,7 @@ pub const Window = struct {
         config: WindowConfig,
         message_queue: *MessageQueue,
     ) !Window {
+        if (config.no_focus and builtin.os.tag != .macos) return error.NoFocusUnsupported;
         const platform = try backend.PlatformWindow.init(
             allocator,
             config,
@@ -109,8 +115,13 @@ pub const Window = struct {
     /// Enable local automation after createWindow, before run. macOS only.
     /// socket_path must be absolute and inside an owner-only directory.
     pub fn startAutomation(self: *Window, socket_path: [:0]const u8) !void {
+        try self.startAutomationWithOptions(socket_path, .{});
+    }
+
+    /// Enable automation with explicit focus behavior. Call before run to control startup too.
+    pub fn startAutomationWithOptions(self: *Window, socket_path: [:0]const u8, options: AutomationOptions) !void {
         if (comptime @hasDecl(backend.PlatformWindow, "startAutomation")) {
-            try self.platform.startAutomation(socket_path);
+            try self.platform.startAutomation(socket_path, options.background or self.config.no_focus);
         } else return error.AutomationUnsupported;
     }
 

@@ -15,12 +15,14 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next(); // skip program name
     var target: ?[]const u8 = null;
+    var no_focus = false;
     var automation_socket: ?[]const u8 = null;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--automation-socket PATH] [URL or file path]\n" ++
+            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--no-focus] [--automation-socket PATH] [URL or file path]\n" ++
                 "       turf -h | --help\n\n" ++
-                "With no arguments, opens the default page.\n\n" ++
+                "With no arguments, opens the default page.\n" ++
+                "--no-focus shows the window without activating it (macOS).\n\n" ++
                 "Examples:\n" ++
                 "  turf\n" ++
                 "  turf https://example.com\n" ++
@@ -30,6 +32,8 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--automation-socket")) {
             if (automation_socket != null) return error.DuplicateAutomationSocket;
             automation_socket = args.next() orelse return error.MissingAutomationSocketPath;
+        } else if (std.mem.eql(u8, arg, "--no-focus")) {
+            no_focus = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownOption;
         } else {
@@ -51,6 +55,7 @@ pub fn main(init: std.process.Init) !void {
             .height = 800,
         },
         .title = "Turf",
+        .no_focus = no_focus,
     };
 
     var window = try turf.Window.init(
