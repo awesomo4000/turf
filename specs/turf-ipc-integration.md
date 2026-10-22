@@ -3,6 +3,11 @@
 
 # Turf IPC Integration Plan
 
+> Historical proposal. The macOS implementation now uses opt-in JSON-RPC over
+> an explicitly named Unix socket, with no discovery or CDP adapter. See the
+> [automation API and protocol in README](../README.md#macos-automation).
+> The stdin/stdout and CDP examples below are not implemented.
+
 ## Current Turf Capabilities
 
 Turf already has most of what we need:

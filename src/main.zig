@@ -14,10 +14,11 @@ pub fn main(init: std.process.Init) !void {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args.deinit();
     _ = args.next(); // skip program name
-    const target = args.next();
-    if (target) |arg| {
+    var target: ?[]const u8 = null;
+    var automation_socket: ?[]const u8 = null;
+    while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [URL or file path]\n" ++
+            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--automation-socket PATH] [URL or file path]\n" ++
                 "       turf -h | --help\n\n" ++
                 "With no arguments, opens the default page.\n\n" ++
                 "Examples:\n" ++
@@ -26,6 +27,14 @@ pub fn main(init: std.process.Init) !void {
                 "  turf index.html\n" ++
                 "  turf /path/to/file.html\n");
             return;
+        } else if (std.mem.eql(u8, arg, "--automation-socket")) {
+            if (automation_socket != null) return error.DuplicateAutomationSocket;
+            automation_socket = args.next() orelse return error.MissingAutomationSocketPath;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            return error.UnknownOption;
+        } else {
+            if (target != null) return error.TooManyArguments;
+            target = arg;
         }
     }
 
@@ -103,6 +112,12 @@ pub fn main(init: std.process.Init) !void {
             \\</html>
         ;
         window.loadString(welcome_html);
+    }
+
+    if (automation_socket) |path| {
+        const socket_z = try allocator.dupeZ(u8, path);
+        defer allocator.free(socket_z);
+        try window.startAutomation(socket_z);
     }
 
     // Run the application

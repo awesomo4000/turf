@@ -20,6 +20,8 @@ extern fn NSLoadLocalFile(path: [*:0]const u8) void;
 extern fn NSLoadString(html_content: [*:0]const u8) void;
 extern fn NSEvaluateJavaScript(script: [*:0]const u8) void;
 extern fn NSShowOpenFileDialog() void;
+extern fn NSStartAutomation(path: [*:0]const u8) c_int;
+extern fn NSStopAutomation() void;
 
 // Global reference to the platform window for message handling
 var global_platform_window: ?*PlatformWindow = null;
@@ -124,7 +126,7 @@ pub const PlatformWindow = struct {
     }
 
     pub fn deinit(self: *PlatformWindow) void {
-        _ = self;
+        self.stopAutomation();
     }
 
     pub fn createWindow(self: *PlatformWindow, config: common.WindowConfig, turf_js: []const u8) void {
@@ -142,6 +144,20 @@ pub const PlatformWindow = struct {
             );
             self.is_window_created = true;
         }
+    }
+
+    pub fn startAutomation(self: *PlatformWindow, socket_path: [:0]const u8) !void {
+        if (!self.is_window_created) return error.WindowNotCreated;
+        const result = NSStartAutomation(socket_path);
+        if (result != 0) {
+            std.log.err("Cannot start automation socket: errno {d}", .{result});
+            return error.AutomationStartFailed;
+        }
+    }
+
+    pub fn stopAutomation(self: *PlatformWindow) void {
+        _ = self;
+        NSStopAutomation();
     }
 
     pub fn show(self: *PlatformWindow) void {

@@ -70,6 +70,10 @@ pub fn build(b: *std.Build) void {
                 .file = b.path("src/platforms/macos/cocoa_bridge.m"),
                 .flags = &[_][]const u8{"-fobjc-arc"},
             });
+            exe.root_module.addCSourceFile(.{
+                .file = b.path("src/platforms/macos/automation.m"),
+                .flags = &[_][]const u8{"-fobjc-arc"},
+            });
             exe.root_module.link_libc = true;
         },
         .linux => {
@@ -147,6 +151,10 @@ pub fn build(b: *std.Build) void {
             demo.root_module.linkFramework("WebKit", .{});
             demo.root_module.addCSourceFile(.{
                 .file = b.path("src/platforms/macos/cocoa_bridge.m"),
+                .flags = &[_][]const u8{"-fobjc-arc"},
+            });
+            demo.root_module.addCSourceFile(.{
+                .file = b.path("src/platforms/macos/automation.m"),
                 .flags = &[_][]const u8{"-fobjc-arc"},
             });
             demo.root_module.link_libc = true;

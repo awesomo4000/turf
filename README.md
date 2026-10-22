@@ -80,6 +80,94 @@ const config: turf.WindowConfig = .{
 
 The setting applies whenever a page loads in the window. It is available only through the Zig API.
 
+### macOS automation
+
+Automation is opt-in and uses an explicit Unix socket path. There is no discovery
+or hibrow integration yet. Create a private directory, then launch Turf:
+
+```bash
+automation_dir=$(mktemp -d /tmp/turf-automation.XXXXXX)
+echo "$automation_dir/control.sock"
+./zig-out/bin/turf --automation-socket "$automation_dir/control.sock"
+```
+
+From another terminal, use the actual socket path printed by
+`echo "$automation_dir/control.sock"` in the first shell:
+
+```bash
+python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock info
+python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock evaluate '{"expression":"document.title"}'
+python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock navigate '{"url":"https://example.com"}'
+python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock resize '{"width":800,"height":600}'
+python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock screenshot -o /tmp/turf.png
+python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock close
+```
+
+Embedding applications enable the same endpoint on the main thread after creating
+the window and before entering its event loop:
+
+```zig
+window.createWindow();
+try window.startAutomation("/absolute/private-directory/control.sock");
+try window.run();
+// window.deinit() stops automation; window.stopAutomation() can stop it earlier.
+```
+
+The parent directory must already exist, belong to the current user, and have no
+group or other permissions, typically mode `0700`. Turf creates a `0600` socket
+and accepts connections only from the same user. Existing paths are never
+replaced. Normal shutdown removes the socket; after a crash, use a new path or
+remove the stale socket yourself. Automation controls this application, including
+executing page JavaScript and closing its window. Keep it disabled when unused.
+No SIP changes or private WebKit automation APIs are required.
+
+The macOS bridge now includes `automation.m` alongside `cocoa_bridge.m`; embedding
+builds that compile the bridge themselves must compile both with ARC and link
+Cocoa and WebKit. The bundled executable and demo build already do this.
+
+#### Socket protocol, version 1
+
+Each request and response is one UTF-8 JSON line using JSON-RPC 2.0. Requests need
+a string or numeric `id`, a string `method`, and an optional object `params`.
+Notifications and batches are not supported. Unknown methods return `-32601`.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"evaluate","params":{"expression":"document.title"}}
+{"jsonrpc":"2.0","id":1,"result":{"type":"string","value":"Welcome"}}
+```
+
+| Method | Parameters | Result |
+| --- | --- | --- |
+| `info` | None | Protocol version, PID, engine, page title, URL, loading state, and methods |
+| `evaluate` | `expression` string | `{type, value}` after awaiting promises; `undefined` omits `value` |
+| `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
+| `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
+| `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
+| `close` | None | `{closing: true}`, followed by closing the window |
+
+Evaluation runs in the main frame and page world and requires macOS 11 or newer.
+Values use JavaScript JSON serialization: cycles and BigInts produce errors;
+non-finite numbers become null, and function/undefined object properties are
+omitted. Object handles, native input, cross-origin frame selection, and debugger
+breakpoints are not part of this protocol.
+
+Commands execute sequentially, with one active client connection at a time.
+Clients may reuse a connection or reconnect for each request. An incomplete or
+idle request has a 10-second read deadline. Operations and response writes have
+30-second deadlines. A timed-out JavaScript operation may still finish; its late
+result is discarded. Requests are limited to 1 MiB and responses to 32 MiB.
+A navigation response means the page finished loading, not that application
+fetches, fonts, or rendering have settled; use evaluation to wait for app readiness.
+
+Run the integration checks from a macOS GUI session:
+
+```bash
+python3 tests/automation_macos.py
+```
+
+These checks launch the actual system WKWebView and use disposable files under
+`/tmp`, including a check that an existing file cannot be overwritten by startup.
+
 ## Keyboard Shortcuts
 
 These shortcuts are currently available on macOS:

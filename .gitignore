@@ -13,3 +13,5 @@ test*.ps1
 run*.ps1
 *_original.zig
 src/test-*.zig
+
+__pycache__/

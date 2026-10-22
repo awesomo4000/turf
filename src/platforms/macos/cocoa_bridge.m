@@ -4,6 +4,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <dispatch/dispatch.h>
+#import "automation.h"
 
 // Declare the Zig callback functions
 extern void onWindowEvent(int x, int y, int width, int height);
@@ -16,6 +17,9 @@ extern void onJavaScriptMessage(const char* message);
 @end
 
 @implementation AppDelegate
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    TurfAutomationStop();
+}
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
     return YES;
 }
@@ -64,8 +68,16 @@ static BOOL isShowingFileDialog = NO;
     completionHandler();
 }
 
+- (void)webView:(WKWebView *)view didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    TurfAutomationNavigationFinished(navigation, error);
+}
+- (void)webView:(WKWebView *)view didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    TurfAutomationNavigationFinished(navigation, error);
+}
+
 // Navigation delegate methods to persist zoom across reloads
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    TurfAutomationNavigationFinished(navigation, nil);
     // Reapply zoom level after page load
     if ([webView isKindOfClass:[TurfWebView class]]) {
         TurfWebView *turfWebView = (TurfWebView *)webView;
@@ -462,4 +474,11 @@ void NSShowOpenFileDialog(void) {
             }
         }];
     });
+}
+
+int NSStartAutomation(const char *path) {
+    return TurfAutomationStart(webView, path);
+}
+void NSStopAutomation(void) {
+    TurfAutomationStop();
 }

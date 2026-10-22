@@ -106,6 +106,21 @@ pub const Window = struct {
         self.platform.createWindow(self.config, js_code);
     }
 
+    /// Enable local automation after createWindow, before run. macOS only.
+    /// socket_path must be absolute and inside an owner-only directory.
+    pub fn startAutomation(self: *Window, socket_path: [:0]const u8) !void {
+        if (comptime @hasDecl(backend.PlatformWindow, "startAutomation")) {
+            try self.platform.startAutomation(socket_path);
+        } else return error.AutomationUnsupported;
+    }
+
+    /// Stop accepting automation requests and remove the owned socket.
+    pub fn stopAutomation(self: *Window) void {
+        if (comptime @hasDecl(backend.PlatformWindow, "stopAutomation")) {
+            self.platform.stopAutomation();
+        }
+    }
+
     pub fn show(self: *Window) void {
         self.platform.show();
     }
