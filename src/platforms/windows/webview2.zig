@@ -237,6 +237,7 @@ pub const IUnknown = extern struct {
 
 // WebView configuration options
 pub const WebViewOptions = struct {
+    no_focus: bool = false,
     title: []const u8 = "WebView",
     width: i32 = 800,
     height: i32 = 600,
@@ -475,6 +476,7 @@ pub const WebView = struct {
         }
         
         // Clean up
+        @import("automation.zig").windowClosing(self);
         self.cleanup();
     }
     
@@ -508,7 +510,7 @@ pub const WebView = struct {
             0,
             class_name,
             @ptrCast(&title_utf16),
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            WS_OVERLAPPEDWINDOW,
             100, 100, self.options.width, self.options.height,
             null,
             null,
@@ -520,7 +522,7 @@ pub const WebView = struct {
             return error.WindowCreationFailed;
         }
         
-        _ = ShowWindow(self.hwnd.?, 1);
+        _ = ShowWindow(self.hwnd.?, if (self.options.no_focus) 4 else 1);
     }
     
     fn createWebView2Environment(self: *Self) !void {
@@ -986,6 +988,7 @@ pub const WebView = struct {
                 if (ptr_value != 0) {
                     const self: *Self = @ptrFromInt(@as(usize, @intCast(ptr_value)));
                     self.is_shutting_down = true;
+                    @import("automation.zig").windowClosing(self);
                 }
                 _ = DestroyWindow(hwnd);
                 return 0;
@@ -1294,7 +1297,10 @@ const NavigationCompletedHandler = extern struct {
     }
 
     fn invoke(self: *NavigationCompletedHandler, sender: *ICoreWebView2, args: *anyopaque) callconv(WINAPI) HRESULT {
-        _ = args;
+        const table: *const [6]*const anyopaque = @as(*const *const [6]*const anyopaque, @ptrCast(@alignCast(args))).*;
+        const get_success: *const fn (*anyopaque, *win.BOOL) callconv(WINAPI) HRESULT = @ptrCast(@alignCast(table[3]));
+        var success: win.BOOL = .FALSE;
+        _ = get_success(args, &success);
         std.log.debug("NavigationCompleted event fired", .{});
         
         // Mark page as ready
@@ -1302,6 +1308,7 @@ const NavigationCompletedHandler = extern struct {
         
         // Inject the JavaScript that was passed to us using the sender
         self.parent.injectJavaScriptToWebView(sender);
+        @import("automation.zig").navigationCompleted(self.parent, success.toBool());
         
         return S_OK;
     }

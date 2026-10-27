@@ -22,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
             try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--no-focus] [--automation-socket PATH] [URL or file path]\n" ++
                 "       turf -h | --help\n\n" ++
                 "With no arguments, opens the default page.\n" ++
-                "--no-focus shows the window without activating it (macOS).\n\n" ++
+                "--no-focus shows the window without activating it.\n\n" ++
                 "Examples:\n" ++
                 "  turf\n" ++
                 "  turf https://example.com\n" ++

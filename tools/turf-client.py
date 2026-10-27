@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2026 awesomo4000
-"""Send one JSON-RPC request to an explicitly named Turf Unix socket."""
+"""Send JSON-RPC to an explicitly named Turf Unix socket or Windows pipe."""
 import argparse
 import base64
 import json
@@ -13,15 +13,95 @@ import sys
 from pathlib import Path
 
 
+def _pipe_exchange(path, payload):
+    """Use overlapped Win32 I/O so an unresponsive pipe cannot hang the client."""
+    import ctypes as c
+    from ctypes import wintypes as w
+    import time
+    if os.name != 'nt':
+        raise OSError('Windows named pipes require a Windows client')
+    class Overlapped(c.Structure):
+        _fields_ = [('internal', c.c_size_t), ('internal_high', c.c_size_t),
+                    ('offset', w.DWORD), ('offset_high', w.DWORD), ('event', w.HANDLE)]
+    api = c.WinDLL('kernel32', use_last_error=True)
+    api.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p, w.DWORD, w.DWORD, w.HANDLE]
+    api.CreateFileW.restype = w.HANDLE
+    api.CreateEventW.argtypes = [c.c_void_p, w.BOOL, w.BOOL, w.LPCWSTR]
+    api.CreateEventW.restype = w.HANDLE
+    api.CloseHandle.argtypes = [w.HANDLE]
+    api.WaitNamedPipeW.argtypes = [w.LPCWSTR, w.DWORD]
+    api.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
+    api.WaitForSingleObject.restype = w.DWORD
+    api.CancelIoEx.argtypes = [w.HANDLE, c.POINTER(Overlapped)]
+    api.GetOverlappedResult.argtypes = [w.HANDLE, c.POINTER(Overlapped), c.POINTER(w.DWORD), w.BOOL]
+    for name in ('ReadFile', 'WriteFile'):
+        getattr(api, name).argtypes = [w.HANDLE, c.c_void_p, w.DWORD, c.POINTER(w.DWORD), c.POINTER(Overlapped)]
+    deadline = time.monotonic() + 35
+    while True:
+        handle = api.CreateFileW(str(path), 0xC0000000, 0, None, 3, 0x40110000, None)
+        if handle != c.c_void_p(-1).value:
+            break
+        error = c.get_last_error()
+        if error != 231 or time.monotonic() >= deadline:
+            raise c.WinError(error)
+        api.WaitNamedPipeW(str(path), 1000)
+    try:
+        def transfer(buffer, size, writing):
+            event = api.CreateEventW(None, True, False, None)
+            if not event:
+                raise c.WinError(c.get_last_error())
+            operation = Overlapped(event=event)
+            count = w.DWORD()
+            try:
+                method = api.WriteFile if writing else api.ReadFile
+                if not method(handle, buffer, size, c.byref(count), c.byref(operation)):
+                    error = c.get_last_error()
+                    if error != 997:
+                        raise c.WinError(error)
+                    remaining = max(0, int((deadline - time.monotonic()) * 1000))
+                    if api.WaitForSingleObject(event, remaining) != 0:
+                        api.CancelIoEx(handle, c.byref(operation))
+                        api.GetOverlappedResult(handle, c.byref(operation), c.byref(count), True)
+                        raise TimeoutError('Turf pipe request timed out')
+                    if not api.GetOverlappedResult(handle, c.byref(operation), c.byref(count), False):
+                        raise c.WinError(c.get_last_error())
+                return count.value
+            finally:
+                api.CloseHandle(event)
+        offset = 0
+        while offset < len(payload):
+            buffer = c.create_string_buffer(payload[offset:])
+            count = transfer(buffer, len(payload) - offset, True)
+            if not count:
+                raise OSError('Pipe closed during write')
+            offset += count
+        response = bytearray()
+        while len(response) <= 32 * 1024 * 1024 + 1:
+            buffer = c.create_string_buffer(65536)
+            count = transfer(buffer, len(buffer), False)
+            if not count:
+                break
+            response.extend(buffer.raw[:count])
+            if b'\n' in response:
+                return bytes(response[:response.index(b'\n') + 1])
+        raise RuntimeError('Incomplete or oversized response')
+    finally:
+        api.CloseHandle(handle)
+
+
 def request(socket_path, method, params=None):
     message = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(35)
-        connection.connect(str(socket_path))
-        connection.sendall(json.dumps(message).encode() + b"\n")
-        with connection.makefile("rb") as stream:
-            line = stream.readline(32 * 1024 * 1024 + 2)
-    if not line.endswith(b"\n"):
+    payload = json.dumps(message).encode() + b"\n"
+    if str(socket_path).startswith('\\\\.\\pipe\\'):
+        line = _pipe_exchange(socket_path, payload)
+    else:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(35)
+            connection.connect(str(socket_path))
+            connection.sendall(payload)
+            with connection.makefile("rb") as stream:
+                line = stream.readline(32 * 1024 * 1024 + 2)
+    if not line.endswith(b"\n") or len(line) > 32 * 1024 * 1024 + 1:
         raise RuntimeError("Incomplete or oversized response")
     response = json.loads(line)
     if response.get("id") != 1 or response.get("jsonrpc") != "2.0":
@@ -78,7 +158,7 @@ def grab(socket_path, source, output, chunk_bytes=256 * 1024):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("socket", help="Explicit Unix socket path")
+    parser.add_argument("socket", help="Unix socket path or local Windows named pipe")
     parser.add_argument("method", help="info, evaluate, navigate, screenshot, resize, click, key, typeText, grab, close")
     parser.add_argument("params", nargs="?", default="{}", help="JSON object")
     parser.add_argument("-o", "--output", type=Path, help="Save screenshot PNG or grabbed binary data")

@@ -94,10 +94,12 @@ const config: turf.WindowConfig = .{
 
 The setting applies whenever a page loads in the window. It is available only through the Zig API.
 
-### macOS automation
+### Automation
 
-Automation is opt-in and uses an explicit Unix socket path. There is no discovery
-or hibrow integration yet. Create a private directory, then launch Turf:
+Automation is opt-in on macOS, Linux, and Windows. It uses an explicit Unix socket
+path on macOS/Linux or a local named pipe on Windows, with the same JSON-RPC commands.
+There is no discovery or hibrow integration yet. On macOS/Linux, create a private
+directory, then launch Turf:
 
 ```bash
 automation_dir=$(mktemp -d /tmp/turf-automation.XXXXXX)
@@ -117,6 +119,21 @@ python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock screenshot
 python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock close
 ```
 
+On Windows, use a unique local pipe name in two terminals:
+
+```powershell
+.\zig-out\bin\turf.exe --no-focus --automation-socket '\\.\pipe\turf-dev'
+python tools\turf-client.py '\\.\pipe\turf-dev' info
+python tools\turf-client.py '\\.\pipe\turf-dev' screenshot -o turf.png
+python tools\turf-client.py '\\.\pipe\turf-dev' close
+```
+
+Windows pipes have an ACL restricted to the current user, reject remote clients,
+and refuse to replace an existing pipe name. Pipe names use the `\\.\pipe\` prefix
+followed by a printable ASCII name without slashes or spaces. They disappear when
+the process exits. The Python client uses Windows overlapped I/O with a deadline;
+no extra Python packages are needed for Turf's protocol.
+
 Embedding applications enable the same endpoint on the main thread after creating
 the window and before entering its event loop:
 
@@ -129,17 +146,23 @@ try window.run();
 // window.deinit() stops automation; window.stopAutomation() can stop it earlier.
 ```
 
-The parent directory must already exist, belong to the current user, and have no
+For Unix sockets, the parent directory must already exist, belong to the current user, and have no
 group or other permissions, typically mode `0700`. Turf creates a `0600` socket
 and accepts connections only from the same user. Existing paths are never
 replaced. Normal shutdown removes the socket; after a crash, use a new path or
 remove the stale socket yourself. Automation controls this application, including
 executing page JavaScript and closing its window. Keep it disabled when unused.
-No SIP changes or private WebKit automation APIs are required.
+No private WebKit APIs are required. macOS does not require SIP changes.
 
 The macOS bridge now includes `automation.m` alongside `cocoa_bridge.m`; embedding
 builds that compile the bridge themselves must compile both with ARC and link
-Cocoa and WebKit. The bundled executable and demo build already do this.
+Cocoa and WebKit. Linux builds compile `src/platforms/linux/automation.c` and
+link GTK4, WebKitGTK 6, JavaScriptCoreGTK 6, and X11. The bundled library,
+executable, and demo builds already include the Linux bridge. Foreground native
+input also needs the XTest extension and `libXtst.so.6` at runtime.
+Windows builds include `automation.zig` and `automation_transport.c`, linking
+Win32 security and window APIs. The Windows backend calls WebView2's public
+in-process DevTools API; it does not open a CDP debugging port.
 
 #### Socket protocol, version 1
 
@@ -164,19 +187,24 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | `typeText` | `text` | Inserts Unicode text through the native text-input interface |
 | `close` | None | `{closing: true}`, followed by closing the window |
 
-Evaluation runs in the main frame and page world and requires macOS 11 or newer.
+Evaluation runs in the main frame and page world. On macOS it requires macOS 11 or newer.
 Values use JavaScript JSON serialization: cycles and BigInts produce errors;
 non-finite numbers become null, and function/undefined object properties are
 omitted. Object handles, cross-origin frame selection, and debugger
 breakpoints are not part of this protocol.
 
-Commands execute sequentially, with one active client connection at a time.
-Clients may reuse a connection or reconnect for each request. An incomplete or
+Commands execute sequentially on each connection. macOS serves one active client
+at a time; Linux accepts up to 16 clients and Windows up to 8, so a pending evaluation
+does not block another client. Clients may reuse a connection or reconnect for each request. An incomplete or
 idle request has a 10-second read deadline. Operations and response writes have
 30-second deadlines. A timed-out JavaScript operation may still finish; its late
 result is discarded. Requests are limited to 1 MiB and responses to 32 MiB.
 A navigation response means the page finished loading, not that application
 fetches, fonts, or rendering have settled; use evaluation to wait for app readiness.
+Linux and Windows reject overlapping navigation with `-32000`; wait for `info.loading`
+to be false before navigating again. They reject embedded NULs in string parameters
+and numeric IDs outside the JavaScript safe-integer range; use string IDs for larger values.
+On Windows, requests arriving before WebView2 initializes return `-32000`; retry `info`.
 
 #### Grab binary data
 
@@ -203,8 +231,11 @@ when copying the client elsewhere.
 
 #### Native input
 
-`click` and `key` deliver AppKit events to the target view and window's responder
-chain. By default, startup, clicks, and key events activate Turf for interactive use.
+On macOS, `click` and `key` deliver AppKit events to the target view and window's
+responder chain. Linux uses XTest through Turf's socket API, activates the target
+window, and delivers real X11 input. Clicks move the desktop pointer
+to the target and leave it there. This uses the desktop input stream, so concurrent user input
+can interfere. By default, startup, clicks, and key events activate Turf.
 Use `--no-focus` to show the window without activating it, with or without an
 automation socket. For example:
 
@@ -217,15 +248,27 @@ Embedders can set `WindowConfig.no_focus = true` for both startup and automation
 or pass `.{ .background = true }` to `startAutomationWithOptions` before `run()`
 for background automation only. `startAutomation` keeps the default foreground
 behavior unless the window has `no_focus` enabled. `info.background` reports the
-effective automation mode. These options currently support macOS; requesting
-`no_focus` on another platform returns `NoFocusUnsupported`.
+effective automation mode. These options support macOS, Linux, and Windows.
+
+Windows input uses WebView2's in-process `Input` methods and reports
+`nativeInput: "webview2-devtools"`. Events are trusted browser input, rather than
+synthetic DOM events or system-wide `SendInput` calls. Background click, key, and
+text input are supported without moving the desktop pointer or activating Turf.
+This tests page interaction; it does not test native dialogs or physical OS input routing.
+
+On Linux, background `click` and `key` return `-32004` without activating the
+window. Background evaluation, navigation, resizing, screenshots, `grab`, and
+`typeText` remain available. `info.capabilities.nativeInput` is `x11-xtest` when
+available, otherwise `unsupported`; `backgroundNativeInput` and `keyRepeat` are
+false. Wayland native click/key injection is not implemented. Linux tests cover
+the X11 backend; Wayland core operations have not been verified yet.
 
 Input does not call DOM `.click()` or construct JavaScript keyboard events.
 The window remains visible; this is not headless mode.
 Native dialogs and other operations requiring foreground interaction are not
-covered by the background input checks. This is application-local synthesis,
-not system-wide hardware input or IME emulation; no Accessibility
-permission or SIP change is needed. A response acknowledges dispatch, not the
+covered by the background input checks. macOS input is application-local and
+does not need Accessibility permission. No backend emulates an IME.
+A response acknowledges dispatch, not the
 completion of JavaScript event handlers. Poll the relevant page state afterward.
 
 ```bash
@@ -237,13 +280,16 @@ python3 tools/turf-client.py /path/to/control.sock typeText '{"text":"Hello, ott
 ```
 
 Modifiers are `shift`, `control`, `alt`, and `meta`, which map to macOS Shift,
-Control, Option, and Command. Supported keys are printable US-layout ASCII,
+Control, Option, and Command, or Linux Shift, Control, Alt, and Super. Use Control+A
+for select-all on Linux. Supported keys are printable US-layout ASCII,
 `ArrowLeft`, `ArrowRight`, `ArrowUp`, `ArrowDown`, `Home`, `End`, `PageUp`,
 `PageDown`, `Delete`, `Backspace`, `Enter`, `Tab`, `Escape`, and `Space`.
-`repeat: true` marks the key-down as a repeat; it does not hold the key down.
-Use `typeText` for Unicode strings. It inserts into the focused native text client
-without generating a key event per character. Turf now provides standard Edit
-menu actions for select-all, cut, copy, paste, undo, and redo.
+On macOS and Windows, `repeat: true` marks the key-down as a repeat; it does not hold the key
+down. Linux returns `-32004` for synthetic repeat and uses the current X keyboard
+map for printable keys. Use `typeText` for Unicode strings. macOS inserts through
+the native text client; Linux uses WebKit's `InsertText` editing command. Both
+require a focused editable field and avoid generating a key event per character.
+Turf provides standard Edit menu actions on macOS.
 
 Click coordinates are viewport points, not screenshot pixels. Retina screenshots
 can have twice as many pixels per axis. When deriving coordinates from DOM client
@@ -251,6 +297,73 @@ rectangles, account for the ratio between `info.viewport` dimensions and
 `window.innerWidth` / `window.innerHeight`, and scroll the element into view first.
 Only a single left click is currently supported; drag, right-click, and held-key
 sequences are not implemented.
+
+Run the Linux suite in an X11 session with `DISPLAY` and `XAUTHORITY` set:
+
+```bash
+python3 tests/automation_linux.py
+```
+
+All commands, including native input, go through Turf's socket. `wmctrl` and
+`xprop` only observe window/focus state. The suite checks background operations
+without focus activation, then foreground native input, protocol limits,
+concurrent clients, screenshots, and chunked transfers. Foreground tests bring
+Turf forward; no desktop automation helper is required by the server itself.
+
+For an isolated virtual desktop, install the test dependencies and run:
+
+```bash
+sudo apt-get install xvfb xauth dbus
+python3 tests/automation_xvfb.py
+```
+
+The runner starts a private Xvfb display with TCP disabled and a private
+D-Bus session. It runs the socket and lifecycle checks, including foreground native input,
+without moving your physical desktop pointer or changing its focus. It uses
+software rendering and cleans up the virtual display afterward. An optional
+first argument selects a different Turf executable. Window-manager focus checks
+remain in `automation_linux.py`, which runs on a regular desktop.
+
+#### Windows testing
+
+Run the native Turf protocol tests from a Windows desktop session, with no
+Playwright dependency and no debugging port:
+
+```powershell
+python tests\automation_windows_protocol.py zig-out\bin\turf.exe
+```
+
+The suite covers foreground/background input, focus preservation, navigation,
+screenshots, chunked grabs, request limits, concurrent clients, timeout recovery,
+and shutdown. An additional WebView2 CDP smoke test uses Playwright:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python -m pip install playwright
+.venv\Scripts\python tests\automation_windows.py zig-out\bin\turf.exe
+.venv\Scripts\python tests\automation_windows.py zig-out\bin\demo.exe --bridge
+```
+
+The smoke test enables a temporary CDP port, uses a fresh WebView2 profile, checks
+DOM access, trusted clicks, text entry, and PNG capture, then terminates its own
+process tree. `--bridge` additionally checks native ping/pong; use it with the
+demo, which starts Turf's optional message pump.
+
+From Windows SSH, run the test in your existing logged-in desktop session:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\automation_windows_session.ps1 -Binary zig-out\bin\turf.exe -Python python.exe -Protocol
+```
+
+This creates and removes a temporary interactive scheduled task using the current
+account, without storing a password. The test worked on our disconnected RDP
+session; a direct SSH session-0 launch did not initialize the CDP endpoint. This
+is desktop-session testing, not a supported headless mode. The runner retains
+its log in the Windows temporary directory. Omit `-Protocol` to run the optional
+Playwright smoke test instead. That CDP setup follows the
+[Playwright WebView2 guide](https://playwright.dev/docs/webview2).
+
+#### macOS testing
 
 Run the integration checks from a macOS GUI session:
 

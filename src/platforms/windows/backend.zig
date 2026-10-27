@@ -5,6 +5,7 @@
 const std = @import("std");
 const webview2 = @import("webview2.zig");
 const common = @import("../../common.zig");
+const automation = @import("automation.zig");
 
 const windows = std.os.windows;
 const HWND = windows.HWND;
@@ -21,6 +22,8 @@ pub const PlatformWindow = struct {
     running: std.atomic.Value(bool),
     initial_html: ?[]const u8,
     prng: std.Random.DefaultPrng,
+    automation_server: ?*automation.Server = null,
+    initial_url: ?[:0]u8 = null,
 
     const Self = @This();
 
@@ -43,6 +46,8 @@ pub const PlatformWindow = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.stopAutomation();
+        if (self.initial_url) |url| self.allocator.free(url);
         self.running.store(false, .seq_cst);
         
         // Clear global reference
@@ -93,7 +98,23 @@ pub const PlatformWindow = struct {
     pub fn loadURL(self: *Self, url: [:0]const u8) void {
         if (self.webview) |wv| {
             wv.navigate(url);
+        } else {
+            const copy = self.allocator.dupeSentinel(u8, url, 0) catch return;
+            if (self.initial_url) |old| self.allocator.free(old);
+            if (self.initial_html) |old| self.allocator.free(old);
+            self.initial_html = null;
+            self.initial_url = copy;
         }
+    }
+
+    pub fn startAutomation(self: *Self, path: [:0]const u8, background: bool) !void {
+        if (self.automation_server != null) return error.AutomationAlreadyStarted;
+        self.automation_server = try automation.start(self, path, background);
+    }
+
+    pub fn stopAutomation(self: *Self) void {
+        if (self.automation_server) |server| server.stop();
+        self.automation_server = null;
     }
 
     pub fn loadHTML(self: *Self, html: [:0]const u8, base_uri: ?[:0]const u8) void {
@@ -121,10 +142,14 @@ pub const PlatformWindow = struct {
         } else {
             // Store HTML for later when WebView is created
             std.log.debug("Windows backend: Storing HTML for later", .{});
-            self.initial_html = self.allocator.dupe(u8, html_slice) catch {
+            const copy = self.allocator.dupe(u8, html_slice) catch {
                 std.debug.print("Failed to store HTML\n", .{});
                 return;
             };
+            if (self.initial_html) |old| self.allocator.free(old);
+            if (self.initial_url) |old| self.allocator.free(old);
+            self.initial_url = null;
+            self.initial_html = copy;
         }
     }
 
@@ -149,7 +174,8 @@ pub const PlatformWindow = struct {
             .title = self.config.title,
             .width = @intCast(self.config.geometry.width),
             .height = @intCast(self.config.geometry.height),
-            .url = null,
+            .url = self.initial_url,
+            .no_focus = self.config.no_focus or (if (self.automation_server) |server| server.background else false),
             .html = self.initial_html,
             .js_inject = blk: {
                 const js = if (self.js_inject_code.len > 0) self.js_inject_code else null;

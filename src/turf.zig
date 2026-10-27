@@ -72,7 +72,6 @@ pub const Window = struct {
         config: WindowConfig,
         message_queue: *MessageQueue,
     ) !Window {
-        if (config.no_focus and builtin.target.os.tag != .macos) return error.NoFocusUnsupported;
         const platform = try backend.PlatformWindow.init(
             allocator,
             config,
@@ -112,8 +111,8 @@ pub const Window = struct {
         self.platform.createWindow(self.config, js_code);
     }
 
-    /// Enable local automation after createWindow, before run. macOS only.
-    /// socket_path must be absolute and inside an owner-only directory.
+    /// Enable local automation after createWindow, before run.
+    /// Use an owner-private Unix socket path or a local Windows named pipe.
     pub fn startAutomation(self: *Window, socket_path: [:0]const u8) !void {
         try self.startAutomationWithOptions(socket_path, .{});
     }

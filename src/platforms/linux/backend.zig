@@ -5,6 +5,9 @@ const std = @import("std");
 const common = @import("../../common.zig");
 
 const c = @import("bindings.zig");
+extern fn turf_linux_automation_start(view: ?*c.GtkWidget, window: ?*c.GtkWidget, path: [*:0]const u8, background: bool) c_int;
+extern fn turf_linux_automation_stop() void;
+extern fn turf_linux_show_window(window: ?*c.GtkWidget, no_focus: bool) void;
 
 // Platform implementation
 pub const PlatformWindow = struct {
@@ -15,13 +18,13 @@ pub const PlatformWindow = struct {
     message_queue: *common.MessageQueue,
     main_loop: ?*c.GMainLoop = null,
     prng: std.Random.DefaultPrng,
+    no_focus: bool,
 
     pub fn init(
         allocator: std.mem.Allocator,
         config: common.WindowConfig,
         message_queue: *common.MessageQueue,
     ) !PlatformWindow {
-        _ = config; // Will be used in createWindow
 
         // Suppress libEGL warnings
         _ = c.g_setenv("EGL_LOG_LEVEL", "fatal", 1);
@@ -36,13 +39,14 @@ pub const PlatformWindow = struct {
 
         return PlatformWindow{
             .allocator = allocator,
+            .no_focus = config.no_focus,
             .message_queue = message_queue,
             .prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(std.Options.debug_io).toNanoseconds())),
         };
     }
 
     pub fn deinit(self: *PlatformWindow) void {
-        _ = self;
+        self.stopAutomation();
     }
 
     pub fn createWindow(self: *PlatformWindow, config: common.WindowConfig, turf_js: [:0]const u8) void {
@@ -51,6 +55,9 @@ pub const PlatformWindow = struct {
         self.gtk_window = c.gtk_window_new() orelse return;
         c.gtk_window_set_title(@ptrCast(self.gtk_window), config.title);
         c.gtk_window_set_default_size(@ptrCast(self.gtk_window), config.geometry.width, config.geometry.height);
+
+        // Close the event loop even when async WebKit work still holds object references.
+        _ = c.g_signal_connect_data(self.gtk_window, "close-request", @ptrCast(&onWindowClose), self, null, 0);
 
         // Connect destroy signal
         _ = c.g_signal_connect_data(self.gtk_window, "destroy", @ptrCast(&onWindowDestroy), self, null, 0);
@@ -78,14 +85,27 @@ pub const PlatformWindow = struct {
         // Add webview to window
         c.gtk_window_set_child(@ptrCast(self.gtk_window), self.webview);
 
-        // Show window
-        c.gtk_widget_show(self.gtk_window);
+        // Showing is deferred until run so automation can choose focus behavior.
     }
 
     pub fn show(self: *PlatformWindow) void {
         if (self.gtk_window) |window| {
-            c.gtk_widget_show(window);
+            turf_linux_show_window(window, self.no_focus);
         }
+    }
+
+    pub fn startAutomation(self: *PlatformWindow, socket_path: [:0]const u8, background: bool) !void {
+        if (self.webview == null or self.gtk_window == null) return error.WindowNotCreated;
+        const result = turf_linux_automation_start(self.webview, self.gtk_window, socket_path, background);
+        if (result != 0) {
+            std.log.err("Cannot start automation socket: errno {d}", .{result});
+            return error.AutomationStartFailed;
+        }
+    }
+
+    pub fn stopAutomation(self: *PlatformWindow) void {
+        _ = self;
+        turf_linux_automation_stop();
     }
 
     pub fn loadURL(self: *PlatformWindow, url: [:0]const u8) void {
@@ -107,6 +127,7 @@ pub const PlatformWindow = struct {
     }
 
     pub fn run(self: *PlatformWindow) void {
+        self.show();
         // GTK4 uses GMainLoop
         self.main_loop = c.g_main_loop_new(null, 0);
         defer {
@@ -197,11 +218,17 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     return 1; // Keep timer running
 }
 
+fn onWindowClose(widget: ?*c.GtkWidget, user_data: ?*anyopaque) callconv(.c) c.gboolean {
+    onWindowDestroy(widget, user_data);
+    return 0; // Allow GTK to close the window.
+}
+
 // Window destroy callback
 fn onWindowDestroy(widget: ?*c.GtkWidget, user_data: ?*anyopaque) callconv(.c) void {
     _ = widget;
     if (user_data) |data| {
         const window = @as(*PlatformWindow, @ptrCast(@alignCast(data)));
+        window.stopAutomation();
         if (window.main_loop) |loop| {
             c.g_main_loop_quit(loop);
         }
