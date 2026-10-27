@@ -78,12 +78,12 @@ pub fn main(init: std.process.Init) !void {
             arg,
             "https://",
         )) {
-            const url_z = try allocator.dupeZ(u8, arg);
+            const url_z = try allocator.dupeSentinel(u8, arg, 0);
             defer allocator.free(url_z);
             window.loadURL(url_z);
         } else {
             // Handle file path
-            const path_z = try allocator.dupeZ(u8, arg);
+            const path_z = try allocator.dupeSentinel(u8, arg, 0);
             defer allocator.free(path_z);
             try window.loadFile(path_z);
         }
@@ -120,7 +120,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (automation_socket) |path| {
-        const socket_z = try allocator.dupeZ(u8, path);
+        const socket_z = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(socket_z);
         try window.startAutomation(socket_z);
     }

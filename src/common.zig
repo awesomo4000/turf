@@ -48,7 +48,7 @@ pub const MessageQueue = struct {
     }
     
     pub fn deinit(self: *MessageQueue) void {
-        std.Io.Threaded.mutexLock(&self.mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.mutex);
         defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
         for (self.messages.items) |msg| {
@@ -59,7 +59,7 @@ pub const MessageQueue = struct {
     }
     
     pub fn push(self: *MessageQueue, msg_type: []const u8, data: [:0]const u8) !void {
-        std.Io.Threaded.mutexLock(&self.mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.mutex);
         defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
         try self.messages.append(self.allocator, .{
@@ -70,17 +70,17 @@ pub const MessageQueue = struct {
     
     // Alternative method that copies the data
     pub fn pushCopy(self: *MessageQueue, msg_type: []const u8, data: []const u8) !void {
-        std.Io.Threaded.mutexLock(&self.mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.mutex);
         defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
         try self.messages.append(self.allocator, .{
             .type = try self.allocator.dupe(u8, msg_type),
-            .data = try self.allocator.dupeZ(u8, data),
+            .data = try self.allocator.dupeSentinel(u8, data, 0),
         });
     }
     
     pub fn popAll(self: *MessageQueue) !std.ArrayList(Message) {
-        std.Io.Threaded.mutexLock(&self.mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.mutex);
         defer std.Io.Threaded.mutexUnlock(&self.mutex);
         
         var result: std.ArrayList(Message) = .empty;

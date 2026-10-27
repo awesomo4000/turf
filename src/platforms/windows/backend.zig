@@ -74,7 +74,7 @@ pub const PlatformWindow = struct {
         self.config = config;
         
         // Copy the JavaScript code since the caller might free it
-        self.js_inject_code = self.allocator.dupeZ(u8, js_inject_code) catch {
+        self.js_inject_code = self.allocator.dupeSentinel(u8, js_inject_code, 0) catch {
             std.debug.print("Failed to copy JavaScript code\n", .{});
             self.js_inject_code = "";
             return;
@@ -111,7 +111,7 @@ pub const PlatformWindow = struct {
             };
             
             var data_uri_z_buffer: [65536]u8 = undefined;
-            const data_uri_z = std.fmt.bufPrintZ(&data_uri_z_buffer, "{s}", .{data_uri}) catch {
+            const data_uri_z = std.mem.printSentinel(&data_uri_z_buffer, "{s}", .{data_uri}, 0) catch {
                 std.debug.print("Failed to create null-terminated URI\n", .{});
                 return;
             };
@@ -273,7 +273,7 @@ fn handleJavaScriptMessage(window: *PlatformWindow, message: []const u8) !void {
     // Handle different message types
     if (std.mem.eql(u8, msg_type.string, "ping")) {
         // Send pong response
-        try window.message_queue.push("pong", try window.allocator.dupeZ(u8, "{\"message\":\"Pong from native!\"}"));
+        try window.message_queue.push("pong", try window.allocator.dupeSentinel(u8, "{\"message\":\"Pong from native!\"}", 0));
     } else if (std.mem.eql(u8, msg_type.string, "echo")) {
         // Echo back the message
         if (root.get("message")) |msg| {

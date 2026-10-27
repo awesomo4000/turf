@@ -27,7 +27,7 @@ Lightweight webviews with message passing between native code (Zig) and JavaScri
 
 ### Prerequisites
 
-- Zig 0.16.0
+- Zig 0.17.0
 - The platform requirements listed above
 
 ### Building
@@ -49,7 +49,7 @@ zig build test
 To cross-build Intel macOS from Apple Silicon, pass a compatible SDK explicitly:
 
 ```bash
-zig build -Dtarget=x86_64-macos --sysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
+zig build -Dtarget=x86_64-macos -Dmacos-sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk
 ```
 
 Windows cross-build targets are `x86_64-windows`, `aarch64-windows`, and

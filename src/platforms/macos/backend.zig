@@ -228,7 +228,7 @@ pub const PlatformWindow = struct {
         }
         try writer.writeAll(");");
 
-        const js_code = try arena_allocator.dupeZ(u8, js_array.written());
+        const js_code = try arena_allocator.dupeSentinel(u8, js_array.written(), 0);
         self.evalJS(js_code);
     }
 };

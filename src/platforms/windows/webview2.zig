@@ -6,7 +6,7 @@ const builtin = @import("builtin");
 pub const win = std.os.windows;
 
 // Windows calling convention
-pub const WINAPI = std.builtin.CallingConvention.winapi;
+pub const WINAPI = std.lang.CallingConvention.winapi;
 
 // Windows type aliases
 pub const HRESULT = i32;
@@ -421,7 +421,7 @@ pub const WebView = struct {
         
         // Clean up message queue
         {
-            std.Io.Threaded.mutexLock(&self.queue_mutex);
+            std.Io.Threaded.mutexLockUncancelable(&self.queue_mutex);
             defer std.Io.Threaded.mutexUnlock(&self.queue_mutex);
             for (self.message_queue.items) |message| {
                 allocator.free(message);
@@ -431,7 +431,7 @@ pub const WebView = struct {
         
         // Clean up script queue
         {
-            std.Io.Threaded.mutexLock(&self.script_mutex);
+            std.Io.Threaded.mutexLockUncancelable(&self.script_mutex);
             defer std.Io.Threaded.mutexUnlock(&self.script_mutex);
             for (self.script_queue.items) |script| {
                 allocator.free(script);
@@ -468,7 +468,7 @@ pub const WebView = struct {
         while (true) {
             const result = GetMessageW(&msg, null, 0, 0);
             if (!result.toBool()) break; // WM_QUIT
-            if (@intFromEnum(result) == -1) continue; // Error
+            if (@backingInt(result) == -1) continue; // Error
             
             _ = TranslateMessage(&msg);
             _ = DispatchMessageW(&msg);
@@ -870,7 +870,7 @@ pub const WebView = struct {
     
     pub fn executeScript(self: *Self, script: []const u8) void {
         // Queue the script for execution on the UI thread
-        std.Io.Threaded.mutexLock(&self.script_mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.script_mutex);
         defer std.Io.Threaded.mutexUnlock(&self.script_mutex);
         
         const script_copy = self.allocator.dupe(u8, script) catch {
@@ -896,7 +896,7 @@ pub const WebView = struct {
             return;
         }
         
-        std.Io.Threaded.mutexLock(&self.script_mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.script_mutex);
         defer std.Io.Threaded.mutexUnlock(&self.script_mutex);
         
         while (self.script_queue.items.len > 0) {
@@ -935,7 +935,7 @@ pub const WebView = struct {
             return error.ShuttingDown;
         }
         
-        std.Io.Threaded.mutexLock(&self.queue_mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.queue_mutex);
         defer std.Io.Threaded.mutexUnlock(&self.queue_mutex);
         
         // Duplicate the message since it might be from a temporary buffer
@@ -950,7 +950,7 @@ pub const WebView = struct {
     
     // Process queued messages from the UI thread
     pub fn processMessageQueue(self: *Self) void {
-        std.Io.Threaded.mutexLock(&self.queue_mutex);
+        std.Io.Threaded.mutexLockUncancelable(&self.queue_mutex);
         defer std.Io.Threaded.mutexUnlock(&self.queue_mutex);
         
         while (self.message_queue.items.len > 0) {

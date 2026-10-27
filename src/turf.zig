@@ -6,7 +6,7 @@ const builtin = @import("builtin");
 const common = @import("common.zig");
 
 // Import platform-specific backend
-const backend = switch (builtin.os.tag) {
+const backend = switch (builtin.target.os.tag) {
     .macos => @import("platforms/macos/backend.zig"),
     .linux => @import("platforms/linux/backend.zig"),
     .windows => @import("platforms/windows/backend.zig"),
@@ -14,7 +14,7 @@ const backend = switch (builtin.os.tag) {
 };
 
 // JavaScript bridge code to inject (platform-specific)
-const turf_js_inject = switch (builtin.os.tag) {
+const turf_js_inject = switch (builtin.target.os.tag) {
     .windows => @embedFile("web/platforms/windows/turf.js"),
     else => @embedFile("web/turf.js"),
 };
@@ -72,7 +72,7 @@ pub const Window = struct {
         config: WindowConfig,
         message_queue: *MessageQueue,
     ) !Window {
-        if (config.no_focus and builtin.os.tag != .macos) return error.NoFocusUnsupported;
+        if (config.no_focus and builtin.target.os.tag != .macos) return error.NoFocusUnsupported;
         const platform = try backend.PlatformWindow.init(
             allocator,
             config,
@@ -177,7 +177,7 @@ pub const Window = struct {
         );
         defer self.allocator.free(json_data);
 
-        const json_data_z = try self.allocator.dupeZ(u8, json_data);
+        const json_data_z = try self.allocator.dupeSentinel(u8, json_data, 0);
         // Don't free json_data_z - the queue takes ownership
 
         try self.message_queue.push(message_type, json_data_z);

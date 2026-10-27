@@ -8,6 +8,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const target_os = target.result.os.tag;
+    const macos_sdk = b.option([]const u8, "macos-sdk", "Path to a macOS SDK for cross-compilation");
 
     // Create turf library
     const libturf = b.createModule(.{
@@ -64,7 +65,7 @@ pub fn build(b: *std.Build) void {
     // Platform-specific executable configuration
     switch (target_os) {
         .macos => {
-            addMacOSSDK(b, exe.root_module);
+            addMacOSSDK(b, exe.root_module, macos_sdk);
             exe.root_module.linkFramework("Cocoa", .{});
             exe.root_module.linkFramework("WebKit", .{});
             exe.root_module.addCSourceFile(.{
@@ -125,9 +126,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
@@ -148,7 +147,7 @@ pub fn build(b: *std.Build) void {
 
     switch (target_os) {
         .macos => {
-            addMacOSSDK(b, demo.root_module);
+            addMacOSSDK(b, demo.root_module, macos_sdk);
             demo.root_module.linkFramework("Cocoa", .{});
             demo.root_module.linkFramework("WebKit", .{});
             demo.root_module.addCSourceFile(.{
@@ -305,11 +304,10 @@ pub fn build(b: *std.Build) void {
 // }
 
 // Zig does not automatically discover SDK paths when cross-compiling macOS.
-fn addMacOSSDK(b: *std.Build, module: *std.Build.Module) void {
-    if (b.sysroot) |sdk| {
-        module.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
-        module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
-        // The linker resolves this path relative to --sysroot.
-        module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+fn addMacOSSDK(b: *std.Build, module: *std.Build.Module, sdk_path: ?[]const u8) void {
+    if (sdk_path) |sdk| {
+        module.addSystemFrameworkPath(b.graph.cwdRelativePath(b.pathJoin(&.{ sdk, "System/Library/Frameworks" })));
+        module.addSystemIncludePath(b.graph.cwdRelativePath(b.pathJoin(&.{ sdk, "usr/include" })));
+        module.addLibraryPath(b.graph.cwdRelativePath(b.pathJoin(&.{ sdk, "usr/lib" })));
     }
 }

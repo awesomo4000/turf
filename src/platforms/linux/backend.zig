@@ -181,7 +181,7 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     }
     writer.writeAll(");") catch return 1;
 
-    const js_code = allocator.dupeZ(u8, js_buffer.written()) catch return 1;
+    const js_code = allocator.dupeSentinel(u8, js_buffer.written(), 0) catch return 1;
 
     // Execute JavaScript
     if (window.webview) |webview| {
@@ -264,7 +264,7 @@ fn onScriptMessage(
                     std.log.debug("Counter updated to: {}", .{value.integer});
                     // Send echo back to JS
                     const echo_data = std.fmt.allocPrint(window.allocator, "{{\"value\":{}}}", .{value.integer}) catch return;
-                    const echo_data_z = window.allocator.dupeZ(u8, echo_data) catch {
+                    const echo_data_z = window.allocator.dupeSentinel(u8, echo_data, 0) catch {
                         window.allocator.free(echo_data);
                         return;
                     };
@@ -300,7 +300,7 @@ fn onScriptMessage(
                 return;
             };
 
-            const pong_data_z = window.allocator.dupeZ(u8, pong_data) catch {
+            const pong_data_z = window.allocator.dupeSentinel(u8, pong_data, 0) catch {
                 std.debug.print("Failed to dupeZ pong data\n", .{});
                 window.allocator.free(pong_data);
                 return;
@@ -332,7 +332,7 @@ fn onScriptMessage(
 
                     // Send echo response
                     const echo_response = std.fmt.allocPrint(window.allocator, "{{\"message\":\"Echo: {s}\"}}", .{msg.string}) catch return;
-                    const echo_response_z = window.allocator.dupeZ(u8, echo_response) catch {
+                    const echo_response_z = window.allocator.dupeSentinel(u8, echo_response, 0) catch {
                         window.allocator.free(echo_response);
                         return;
                     };
@@ -354,7 +354,7 @@ fn onScriptMessage(
             // Get current time and format it
             const timestamp = std.Io.Clock.real.now(std.Options.debug_io).toSeconds();
             const time_str = std.fmt.allocPrint(window.allocator, "{{\"time\":\"{d}\"}}", .{timestamp}) catch return;
-            const time_str_z = window.allocator.dupeZ(u8, time_str) catch {
+            const time_str_z = window.allocator.dupeSentinel(u8, time_str, 0) catch {
                 window.allocator.free(time_str);
                 return;
             };
@@ -389,7 +389,7 @@ fn onScriptMessage(
             const random_value = window.prng.random().intRangeAtMost(i64, min, max);
 
             const random_str = std.fmt.allocPrint(window.allocator, "{{\"value\":{}}}", .{random_value}) catch return;
-            const random_str_z = window.allocator.dupeZ(u8, random_str) catch {
+            const random_str_z = window.allocator.dupeSentinel(u8, random_str, 0) catch {
                 window.allocator.free(random_str);
                 return;
             };
@@ -412,7 +412,7 @@ fn onScriptMessage(
 
                     // Send custom response
                     const response = std.fmt.allocPrint(window.allocator, "{{\"message\":\"Received: {s}\"}}", .{msg_value.string}) catch return;
-                    const response_z = window.allocator.dupeZ(u8, response) catch {
+                    const response_z = window.allocator.dupeSentinel(u8, response, 0) catch {
                         window.allocator.free(response);
                         return;
                     };

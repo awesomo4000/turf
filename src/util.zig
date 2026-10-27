@@ -10,7 +10,7 @@ pub fn getAbsolutePath(
 ) ![:0]const u8 {
     // Check if path is already absolute (starts with '/')
     if (path.len > 0 and path[0] == '/') {
-        return allocator.dupeZ(u8, path);
+        return allocator.dupeSentinel(u8, path, 0);
     }
 
     // Get current working directory
@@ -22,5 +22,5 @@ pub fn getAbsolutePath(
         allocator,
         &[_][]const u8{ cwd, path },
     );
-    return allocator.dupeZ(u8, abs_path);
+    return allocator.dupeSentinel(u8, abs_path, 0);
 }
