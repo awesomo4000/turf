@@ -434,12 +434,15 @@ void NSCreateWindow(int x, int y, int w, int h,
     [window setContentView:parentView];
     [window setTitle:[NSString stringWithUTF8String:title]];
     [window setDelegate:windowDelegate];
-    [window orderBack:nil];
     [window center];
 }
 
 void NSRunApplication(void) {
-    if (!windowNoFocus && !TurfAutomationIsBackground()) {
+    if (windowNoFocus || TurfAutomationIsBackground()) {
+        // Show above other windows without taking keyboard focus. Ordering behind
+        // them can make WebKit report hidden and suspend animation frames.
+        [webView.window orderFrontRegardless];
+    } else {
         [webView.window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     }

@@ -250,6 +250,10 @@ for background automation only. `startAutomation` keeps the default foreground
 behavior unless the window has `no_focus` enabled. `info.background` reports the
 effective automation mode. These options support macOS, Linux, and Windows.
 
+On macOS, no-focus startup brings the window forward without activating the
+application. It does not disable WebKit's visibility-based throttling: fully
+covering or minimizing the window can still suspend animation frames.
+
 Windows input uses WebView2's in-process `Input` methods and reports
 `nativeInput: "webview2-devtools"`. Events are trusted browser input, rather than
 synthetic DOM events or system-wide `SendInput` calls. Background click, key, and
@@ -369,6 +373,8 @@ Run the integration checks from a macOS GUI session:
 
 ```bash
 python3 tests/automation_macos.py
+# Visibility, occlusion, and animation-frame checks. Briefly changes focus.
+python3 tests/visibility_macos.py
 ```
 
 These checks launch the actual system WKWebView and use disposable files under
@@ -376,6 +382,13 @@ These checks launch the actual system WKWebView and use disposable files under
 They compile a passive foreground-app observer with `clang` and fail if the test
 Turf process becomes foreground during startup, input, or shutdown. The observer
 creates no window and does not activate any application.
+
+The separate visibility test compiles Turf's Cocoa bridge into a diagnostic
+program. It compares normal and no-focus startup, focused and unfocused visible
+windows, full occlusion, minimization, and recovery. JSONL output records native
+window state, page visibility/focus events, and animation counts over two-second
+intervals. Leave the desktop undisturbed during this test; it briefly changes
+focus and restores the previously active application when finished.
 
 ## Keyboard Shortcuts
 
