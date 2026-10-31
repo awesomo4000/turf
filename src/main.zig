@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
                 "       turf -h | --help\n\n" ++
                 "With no arguments, opens the default page.\n" ++
                 "--no-focus shows the window without activating it.\n" ++
-                "--start-hidden waits for automation show before displaying the window (macOS).\n\n" ++
+                "--start-hidden waits for automation show before displaying the window.\n\n" ++
                 "Examples:\n" ++
                 "  turf\n" ++
                 "  turf https://example.com\n" ++

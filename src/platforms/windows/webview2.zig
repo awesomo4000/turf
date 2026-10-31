@@ -237,6 +237,9 @@ pub const IUnknown = extern struct {
 
 // WebView configuration options
 pub const WebViewOptions = struct {
+    start_hidden: bool = false,
+    x: i32 = 100,
+    y: i32 = 100,
     no_focus: bool = false,
     title: []const u8 = "WebView",
     width: i32 = 800,
@@ -511,7 +514,7 @@ pub const WebView = struct {
             class_name,
             @ptrCast(&title_utf16),
             WS_OVERLAPPEDWINDOW,
-            100, 100, self.options.width, self.options.height,
+            self.options.x, self.options.y, self.options.width, self.options.height,
             null,
             null,
             instance,
@@ -522,7 +525,7 @@ pub const WebView = struct {
             return error.WindowCreationFailed;
         }
         
-        _ = ShowWindow(self.hwnd.?, if (self.options.no_focus) 4 else 1);
+        if (!self.options.start_hidden) _ = ShowWindow(self.hwnd.?, if (self.options.no_focus) 4 else 1);
     }
     
     fn createWebView2Environment(self: *Self) !void {

@@ -182,9 +182,9 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
 | `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
-| `show` | None; macOS only | Shows the window using its configured focus policy; returns window information |
-| `screens` | None; macOS only | `{screens: [...]}` with IDs, names, built-in/primary flags, scale factors, frames, and work areas |
-| `move` | `screen` ID; optional nonnegative `x`, `y` and `anchor`; macOS only | Actual window screen, frame, position, and focus state |
+| `show` | None | Shows the window using its configured focus policy; returns window information |
+| `screens` | None | `{screens: [...]}` with IDs, names, built-in/primary flags, scale factors, frames, and work areas |
+| `move` | `screen` ID; optional nonnegative `x`, `y` and `anchor`; macOS, Windows, Linux/X11 | Actual window screen, frame, position, and focus state |
 | `click` | `x`, `y` in webview points from the top-left; optional `modifiers` | Dispatches a native left click |
 | `key` | `key`; optional `modifiers` and boolean `repeat` | Dispatches native key-down and key-up events |
 | `typeText` | `text` | Inserts Unicode text through the native text-input interface |
@@ -211,7 +211,7 @@ On Windows, requests arriving before WebView2 initializes return `-32000`; retry
 
 #### Deferred first display
 
-On macOS, start with `--start-hidden --automation-socket PATH` to run automation
+Start with `--start-hidden --automation-socket PATH` to run automation
 without displaying a window. The CLI requires an endpoint for this option so a
 client can show or close the window. Add `--no-focus` to preserve keyboard focus
 when it is eventually shown. Normal startup remains unchanged.
@@ -226,19 +226,23 @@ but animation frames may be suspended until the window is shown.
 Embedders can use `WindowConfig.start_hidden = true` independently of automation.
 After `createWindow()`, call `try window.setPosition(x, y)` and `window.show()`
 before `run()`, or show later from the application's UI thread. `setPosition`
-uses the outer window's top-left in desktop logical points, relative to the
-primary screen's top-left. It neither shows nor activates the window. Automation
-`move` additionally supplies screen-relative anchors and clamping. Hidden startup
-and `setPosition` currently return unsupported errors on Linux and Windows.
+uses the outer window's top-left in the platform's desktop coordinate system,
+described below. It neither shows nor activates the window. Automation `move`
+additionally supplies screen-relative anchors and clamping. Hidden startup works
+on all three platforms. `setPosition` supports macOS,
+Windows, and Linux/X11; Linux/Wayland returns `WindowPositionUnsupported`.
 
-`python3 tests/deferred_show_macos.py` verifies this flow without activation,
-showing only on a connected Dell display, centered in its lower third.
+Set `TURF_TEST_SCREEN` to a display-name substring before running
+`python3 tests/deferred_show_macos.py`. The test requires exactly one matching
+display and shows its window centered in that display's lower third, without
+activation. Display preferences belong in the local environment, not test code.
 
 #### Screen selection and positioning
 
-On macOS, `info.capabilities.windowPosition` is true and `info.window` reports
-`screen`, `frame`, `x`, `y`, `visible`, and `focused`. Check the advertised methods before
-using `screens` or `move`; Linux and Windows do not implement them yet.
+`info.capabilities.windowPosition` is true on macOS, Windows, and Linux/X11.
+`info.window` reports `screen`, `frame`, `x`, `y`, `visible`, and `focused`.
+Check capabilities before using `move`; Linux/Wayland returns `-32004` for
+positioning and reports null desktop window coordinates.
 
 ```bash
 python3 tools/turf-client.py /path/to/control.sock screens
@@ -246,8 +250,9 @@ python3 tools/turf-client.py /path/to/control.sock move \
   '{"screen":"ID-FROM-SCREENS","anchor":"top-right","x":16,"y":16}'
 ```
 
-Screen frames and work areas use desktop logical points with a top-left origin
-on the primary display; other displays can have negative coordinates. A move
+On macOS, screen frames and work areas use desktop logical points with a top-left
+origin on the primary display; other displays can have negative coordinates.
+Windows and Linux coordinate conventions are described below. A move
 uses offsets inward from a corner of the selected screen's work area, excluding
 the menu bar and Dock. Anchors are `top-left` (default), `top-right`, `bottom-left`,
 and `bottom-right`; offsets default to zero. Window frames include the title bar.
@@ -257,9 +262,31 @@ regardless of the requested anchor. `resize` continues to size the webview conte
 Moves clamp to the work area without resizing, activating, or raising the window.
 A window larger than the work area is aligned to its top-left and may overflow.
 Fullscreen windows must exit fullscreen first. Unknown display IDs return
-`-32602`; refresh `screens` after a display is connected or disconnected. IDs
-come from CoreGraphics display UUIDs with a numeric fallback. Treat them as opaque
+`-32602`; refresh `screens` after a display is connected or disconnected.
+On macOS, IDs come from CoreGraphics display UUIDs with a numeric fallback. Treat them as opaque
 and rediscover them rather than assuming they persist across hardware changes.
+
+Windows screen IDs and names are current-session Win32 display device names,
+such as `\\.\DISPLAY1`; RDP reconnects can change them. `isBuiltIn` and
+`scaleFactor` are null when unknown. Windows coordinates follow the embedding
+process's Win32 DPI-awareness context, advertised as `windowCoordinates: "win32"`.
+Do not combine them with coordinates obtained under another DPI context.
+
+Linux screen IDs use connector names, falling back to session-local monitor
+indices. `isPrimary` is null; callers should choose by ID/name or use the first
+screen when no preference is available. Screen bounds use GDK logical coordinates,
+advertised as `windowCoordinates: "gdk-logical"`. X11 positioning includes the
+window manager's frame decorations when it supplies EWMH frame extents. A hidden
+resize returns requested content dimensions, which become actual on first show.
+Live moves wait for the WM to apply the request, returning its actual position
+within two seconds even if desktop policy constrains it. Fullscreen/maximized
+windows must be restored first. Wayland screen enumeration and deferred show are
+available, but desktop window placement is unsupported; its reported work area
+falls back to full monitor bounds. Wayland behavior has not been runtime-tested.
+
+Single-display Windows RDP, Mint X11, and bare Xvfb checks cover hidden startup,
+all anchors, clamping, first-show size and position, input, and shutdown without
+showing. Mixed-DPI and multi-monitor layouts still need hardware validation.
 
 macOS embedders compiling the Cocoa bridge must link Cocoa, WebKit, and
 CoreGraphics. These are OS-provided frameworks; no additional library is bundled.
@@ -441,8 +468,8 @@ They compile a passive foreground-app observer with `clang` and fail if the test
 Turf process becomes foreground during startup, input, or shutdown. The observer
 creates no window and does not activate any application.
 
-The separate visibility test requires a Dell display and positions its windows
-in the lower-third center before showing. It compiles Turf's Cocoa bridge into a diagnostic
+The separate visibility test requires `TURF_TEST_SCREEN` to select one display
+and positions its windows in the lower-third center before showing. It compiles Turf's Cocoa bridge into a diagnostic
 program. It compares normal and no-focus startup, focused and unfocused visible
 windows, full occlusion, minimization, and recovery. JSONL output records native
 window state, page visibility/focus events, and animation counts over two-second
@@ -486,3 +513,16 @@ or use another license.
 Microsoft WebView2 loader binaries retain their upstream terms and are not
 covered by Turf's MPL-2.0 license. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
+
+### Windows and Linux window placement tests
+
+```bash
+# Linux: run in the X11 desktop session, or under xvfb-run.
+python3 tests/window_placement.py ./zig-out/bin/turf
+xvfb-run -a python3 tests/window_placement.py ./zig-out/bin/turf
+```
+
+```powershell
+# Windows: use the existing logged-in desktop session when connecting over SSH.
+powershell -NoProfile -ExecutionPolicy Bypass -File tests/automation_windows_session.ps1 -Binary zig-out/bin/turf.exe -Python python.exe -Placement
+```

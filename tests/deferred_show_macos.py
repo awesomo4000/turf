@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2026 awesomo4000
-"""Verify hidden startup and first show on the Dell, centered in its lower third."""
+"""Verify hidden startup and first show on a selected display, centered in its lower third."""
 import json
 import os
 from pathlib import Path
@@ -13,6 +13,9 @@ from automation_macos import ROOT, client, expect_error
 
 
 def main():
+    screen_name = os.environ.get('TURF_TEST_SCREEN', '').strip()
+    if not screen_name:
+        raise SystemExit('Set TURF_TEST_SCREEN to a display-name substring before running GUI tests')
     binary = ROOT / 'zig-out/bin/turf'
     with tempfile.TemporaryDirectory(prefix='turf-deferred-', dir='/tmp') as directory:
         folder = Path(directory)
@@ -42,15 +45,16 @@ def main():
                 for method, params in [('key', {'key': 'e'}), ('click', {'x': 10, 'y': 10}), ('typeText', {'text': 'e'})]:
                     expect_error(endpoint, method, params, -32004)
                 screens = client.request(endpoint, 'screens')['screens']
-                dell = next((s for s in screens if 'dell' in s['name'].lower()), None)
-                assert dell is not None, 'Dell unavailable; refusing to show on another screen'
-                work = dell['workArea']
+                matches = [s for s in screens if screen_name.casefold() in s['name'].casefold()]
+                assert len(matches) == 1, f'TURF_TEST_SCREEN must match exactly one display: {screen_name!r}'
+                target = matches[0]
+                work = target['workArea']
                 client.request(endpoint, 'resize', {'width': 520, 'height': min(220, int(work['height'] / 3) - 50)})
                 frame = info()['window']['frame']
                 x = (work['width'] - frame['width']) / 2
                 y = work['height'] * 5 / 6 - frame['height'] / 2
-                placed = client.request(endpoint, 'move', {'screen': dell['id'], 'x': x, 'y': y})
-                assert placed['screen'] == dell['id'] and not placed['visible']
+                placed = client.request(endpoint, 'move', {'screen': target['id'], 'x': x, 'y': y})
+                assert placed['screen'] == target['id'] and not placed['visible']
                 assert abs(placed['x'] - x) <= 1 and abs(placed['y'] - y) <= 1
                 for _ in range(10):
                     assert not info()['window']['visible']
@@ -59,7 +63,7 @@ def main():
                 client.request(endpoint, 'evaluate', {'expression': "document.body.innerHTML='<button id=button>Deferred show</button><textarea id=editor></textarea>'; window.framesSeen=0; requestAnimationFrame(function tick(){framesSeen++; requestAnimationFrame(tick)})"})
                 shown = client.request(endpoint, 'show')
                 assert shown['visible'] and not shown['focused']
-                assert shown['screen'] == dell['id'] and shown['frame'] == placed['frame']
+                assert shown['screen'] == target['id'] and shown['frame'] == placed['frame']
                 assert client.request(endpoint, 'show') == shown, 'show must be idempotent'
                 deadline = time.monotonic() + 5
                 while not client.request(endpoint, 'evaluate', {'expression': 'framesSeen > 0 && document.visibilityState === "visible"'})['value']:
@@ -90,7 +94,7 @@ def main():
                 assert process.wait(timeout=10) == 0
                 entries = [json.loads(line) for line in (folder / 'focus.jsonl').read_text().splitlines()]
                 assert not any(row['pid'] == process.pid for row in entries), entries
-                print(f"PASS: hidden startup, placement before show on {dell['name']} lower-third center, rendering, input, and focus preservation")
+                print(f"PASS: hidden startup, placement before show on {target['name']} lower-third center, rendering, input, and focus preservation")
             finally:
                 if process and process.poll() is None:
                     process.terminate()

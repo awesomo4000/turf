@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 awesomo4000
 const std = @import("std");
+const geometry = @import("geometry.zig");
 const backend = @import("backend.zig");
 const wv = @import("webview2.zig");
 const win = std.os.windows;
@@ -191,8 +192,37 @@ fn execute(r: *Request, method: []const u8) !void {
         r.fail(-32000, "WebView2 is not ready");
         return;
     };
+    if (!geometry.visible(view.hwnd.?) and (std.mem.eql(u8, method, "click") or std.mem.eql(u8, method, "key") or std.mem.eql(u8, method, "typeText"))) {
+        r.fail(-32004, "Show the window before sending input");
+        return;
+    }
     if (std.mem.eql(u8, method, "info")) {
-        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .methods = [_][]const u8{ "info", "evaluate", "navigate", "screenshot", "resize", "click", "key", "typeText", "close" }, .capabilities = .{ .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
+        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .window = try geometry.info(r.alloc(), view.hwnd.?), .methods = [_][]const u8{ "info", "evaluate", "navigate", "screenshot", "resize", "screens", "move", "show", "click", "key", "typeText", "close" }, .capabilities = .{ .windowPosition = true, .deferredShow = true, .windowCoordinates = "win32", .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
+    } else if (std.mem.eql(u8, method, "screens")) {
+        r.result(.{ .screens = try geometry.screens(r.alloc()) });
+    } else if (std.mem.eql(u8, method, "show")) {
+        s.window.show();
+        r.result(try geometry.info(r.alloc(), view.hwnd.?));
+    } else if (std.mem.eql(u8, method, "move")) {
+        const id = string(field(r.params, "screen")) orelse {
+            r.fail(-32602, "screen ID required");
+            return;
+        };
+        const xv = field(r.params, "x");
+        const yv = field(r.params, "y");
+        const x = if (!r.params.object.contains("x")) 0 else number(xv) orelse -1;
+        const y = if (!r.params.object.contains("y")) 0 else number(yv) orelse -1;
+        const av = field(r.params, "anchor");
+        const anchor = if (!r.params.object.contains("anchor")) "top-left" else string(av) orelse "";
+        if (x < 0 or y < 0 or !(std.mem.eql(u8, anchor, "top-left") or std.mem.eql(u8, anchor, "top-right") or std.mem.eql(u8, anchor, "bottom-left") or std.mem.eql(u8, anchor, "bottom-right"))) {
+            r.fail(-32602, "move requires nonnegative offsets and a corner anchor");
+            return;
+        }
+        geometry.move(r.alloc(), view.hwnd.?, id, x, y, anchor) catch |err| {
+            if (err == error.UnknownScreen) r.fail(-32602, "Unknown screen; call screens again") else if (err == error.WindowStateUnsupported) r.fail(-32004, "Restore the window before moving") else r.fail(-32002, "Window move failed");
+            return;
+        };
+        r.result(try geometry.info(r.alloc(), view.hwnd.?));
     } else if (std.mem.eql(u8, method, "evaluate")) {
         const expression = string(field(r.params, "expression")) orelse {
             r.fail(-32602, "expression must be a string");

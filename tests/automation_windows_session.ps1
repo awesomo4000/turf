@@ -6,13 +6,15 @@ param(
     [Parameter(Mandatory=$true)][string]$Binary,
     [string]$Python = 'python.exe',
     [switch]$Bridge,
-    [switch]$Protocol
+    [switch]$Protocol,
+    [switch]$Placement
 )
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
 $Python = (Get-Command $Python).Source
 $test = Join-Path $PSScriptRoot 'automation_windows.py'
 if ($Protocol) { $test = Join-Path $PSScriptRoot 'automation_windows_protocol.py' }
+if ($Placement) { $test = Join-Path $PSScriptRoot 'window_placement.py' }
 $name = 'TurfSmoke-' + [Guid]::NewGuid().ToString('N')
 $log = Join-Path $env:TEMP ($name + '.log')
 function Quote-PS([string]$value) { return "'" + $value.Replace("'", "''") + "'" }

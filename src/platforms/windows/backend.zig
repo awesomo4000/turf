@@ -91,8 +91,18 @@ pub const PlatformWindow = struct {
     }
 
     pub fn show(self: *Self) void {
-        // WebView2 wrapper handles window visibility
-        _ = self;
+        self.config.start_hidden = false;
+        if (self.webview) |view| if (view.hwnd) |hwnd| {
+            @import("geometry.zig").show(hwnd, view.options.no_focus);
+        };
+    }
+
+    pub fn setPosition(self: *Self, x: i32, y: i32) !void {
+        self.config.geometry.x = x;
+        self.config.geometry.y = y;
+        if (self.webview) |view| if (view.hwnd) |hwnd| {
+            try @import("geometry.zig").setPosition(hwnd, x, y);
+        };
     }
 
     pub fn loadURL(self: *Self, url: [:0]const u8) void {
@@ -172,6 +182,9 @@ pub const PlatformWindow = struct {
         // Create WebView2 now with stored config
         const options = webview2.WebViewOptions{
             .title = self.config.title,
+            .start_hidden = self.config.start_hidden,
+            .x = self.config.geometry.x,
+            .y = self.config.geometry.y,
             .width = @intCast(self.config.geometry.width),
             .height = @intCast(self.config.geometry.height),
             .url = self.initial_url,

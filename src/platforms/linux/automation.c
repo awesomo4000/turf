@@ -2,22 +2,26 @@
 // Copyright (c) 2026 awesomo4000
 #define _GNU_SOURCE
 #include "automation.h"
-#include <gtk/gtk.h>
-#include <webkit/webkit.h>
-#include <jsc/jsc.h>
-#include <gio/gunixsocketaddress.h>
-#include <gdk/x11/gdkx.h>
-#include <X11/Xlib.h>
-#include <X11/keysym.h>
 #include <X11/XKBlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include <dlfcn.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <errno.h>
+#include <gdk/x11/gdkx.h>
+#include <gio/gunixsocketaddress.h>
+#include <gtk/gtk.h>
+#include <jsc/jsc.h>
+#include <limits.h>
 #include <math.h>
+#include <stdint.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <webkit/webkit.h>
 
 #define MAX_REQUEST (1024 * 1024)
 #define MAX_RESPONSE (32 * 1024 * 1024)
@@ -249,8 +253,12 @@ static gboolean request_timeout(gpointer data) {
 }
 static JSCValue *viewport(Server *s) {
     JSCValue *o = object(s);
-    number(o, "width", gtk_widget_get_width(GTK_WIDGET(s->view)));
-    number(o, "height", gtk_widget_get_height(GTK_WIDGET(s->view)));
+    int width = gtk_widget_get_width(GTK_WIDGET(s->view)),
+        height = gtk_widget_get_height(GTK_WIDGET(s->view));
+    if (!gtk_widget_get_visible(GTK_WIDGET(s->window)))
+        gtk_window_get_default_size(s->window, &width, &height);
+    number(o, "width", width);
+    number(o, "height", height);
     return o;
 }
 static void evaluated(GObject *source, GAsyncResult *result, gpointer data) {
@@ -589,8 +597,352 @@ static gboolean resized(gpointer data) {
     g_object_unref(o);
     return G_SOURCE_REMOVE;
 }
+// X11 desktop positions are in device pixels; GDK monitor rectangles are logical.
+// Convert at the Xlib boundary using the surface scale factor.
+typedef struct {
+    int x, y;
+    gboolean positioned;
+} Placement;
+static Placement *placement(GtkWidget *window) {
+    Placement *p = g_object_get_data(G_OBJECT(window), "turf-placement");
+    if (!p) {
+        p = g_new0(Placement, 1);
+        g_object_set_data_full(G_OBJECT(window), "turf-placement", p, g_free);
+    }
+    return p;
+}
+static gboolean position_supported(GtkWindow *window) {
+    return GDK_IS_X11_DISPLAY(gtk_widget_get_display(GTK_WIDGET(window)));
+}
+int turf_linux_set_position(void *window, int x, int y) {
+    GtkWidget *widget = GTK_WIDGET(window);
+    if (!position_supported(GTK_WINDOW(window)))
+        return ENOTSUP;
+    gtk_widget_realize(widget);
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(widget));
+    Display *display = gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));
+    Window xid = gdk_x11_surface_get_xid(surface);
+    int scale = gdk_surface_get_scale_factor(surface);
+    if ((int64_t)x * scale < INT_MIN || (int64_t)x * scale > INT_MAX ||
+        (int64_t)y * scale < INT_MIN || (int64_t)y * scale > INT_MAX)
+        return EINVAL;
+    Placement *p = placement(widget);
+    p->x = x;
+    p->y = y;
+    p->positioned = TRUE;
+    XSizeHints hints = {0};
+    long supplied = 0;
+    XGetWMNormalHints(display, xid, &hints, &supplied);
+    hints.flags |= USPosition | PPosition | PWinGravity;
+    hints.win_gravity = NorthWestGravity;
+    hints.x = x * scale;
+    hints.y = y * scale;
+    XSetWMNormalHints(display, xid, &hints);
+    if (gtk_widget_get_mapped(widget)) {
+        XEvent e = {0};
+        e.xclient.type = ClientMessage;
+        e.xclient.window = xid;
+        e.xclient.message_type = XInternAtom(display, "_NET_MOVERESIZE_WINDOW", False);
+        e.xclient.format = 32;
+        e.xclient.data.l[0] = NorthWestGravity | (1 << 8) | (1 << 9) | (1 << 12);
+        e.xclient.data.l[1] = x * scale;
+        e.xclient.data.l[2] = y * scale;
+        // A bare Xvfb has no WM. XMoveWindow is needed in that case.
+        Atom wm = XInternAtom(display, "_NET_SUPPORTING_WM_CHECK", False), actual;
+        int format;
+        unsigned long count, after;
+        unsigned char *data = NULL;
+        XGetWindowProperty(display, DefaultRootWindow(display), wm, 0, 1, False, XA_WINDOW, &actual,
+                           &format, &count, &after, &data);
+        gboolean has_wm = count > 0;
+        if (data)
+            XFree(data);
+        if (has_wm)
+            XSendEvent(display, DefaultRootWindow(display), False,
+                       SubstructureRedirectMask | SubstructureNotifyMask, &e);
+        else
+            XMoveWindow(display, xid, x * scale, y * scale);
+    } else
+        XMoveWindow(display, xid, x * scale, y * scale);
+    XSync(display, False);
+    return 0;
+}
+// EWMH lets an unmapped client ask the WM for its future decoration sizes.
+// Query before calculating an anchored first position, without ever mapping.
+static void frame_extents(GdkSurface *surface, int edges[4]) {
+    memset(edges, 0, 4 * sizeof(int));
+    if (!GDK_IS_X11_SURFACE(surface))
+        return;
+    Display *d = gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));
+    Window xid = gdk_x11_surface_get_xid(surface);
+    Atom property = XInternAtom(d, "_NET_FRAME_EXTENTS", False), actual;
+    int format;
+    unsigned long count, after;
+    unsigned char *data = NULL;
+    gboolean requested = FALSE;
+    for (int attempt = 0; attempt < 51; attempt++) {
+        XGetWindowProperty(d, xid, property, 0, 4, False, XA_CARDINAL, &actual, &format, &count,
+                           &after, &data);
+        if (actual == XA_CARDINAL && format == 32 && count == 4) {
+            unsigned long *v = (unsigned long *)data;
+            for (int i = 0; i < 4; i++)
+                edges[i] = (int)MIN(v[i], 8192UL);
+            XFree(data);
+            return;
+        }
+        if (data) {
+            XFree(data);
+            data = NULL;
+        }
+        if (!requested) {
+            Atom wm = XInternAtom(d, "_NET_SUPPORTING_WM_CHECK", False);
+            XGetWindowProperty(d, DefaultRootWindow(d), wm, 0, 1, False, XA_WINDOW, &actual,
+                               &format, &count, &after, &data);
+            gboolean has_wm = count > 0;
+            if (data) {
+                XFree(data);
+                data = NULL;
+            }
+            if (!has_wm)
+                return;
+            XEvent e = {0};
+            e.xclient.type = ClientMessage;
+            e.xclient.window = xid;
+            e.xclient.message_type = XInternAtom(d, "_NET_REQUEST_FRAME_EXTENTS", False);
+            e.xclient.format = 32;
+            XSendEvent(d, DefaultRootWindow(d), False,
+                       SubstructureRedirectMask | SubstructureNotifyMask, &e);
+            XFlush(d);
+            requested = TRUE;
+        }
+        g_usleep(1000);
+    }
+}
+static char *monitor_id(GdkMonitor *m, guint index) {
+    const char *connector = gdk_monitor_get_connector(m);
+    return connector ? g_strdup(connector) : g_strdup_printf("monitor-%u", index);
+}
+static void work_area(GdkMonitor *m, GdkRectangle *rect) {
+    if (GDK_IS_X11_MONITOR(m))
+        gdk_x11_monitor_get_workarea(m, rect);
+    else
+        gdk_monitor_get_geometry(m, rect);
+}
+static JSCValue *rectangle(Server *s, GdkRectangle r) {
+    JSCValue *o = object(s);
+    number(o, "x", r.x);
+    number(o, "y", r.y);
+    number(o, "width", r.width);
+    number(o, "height", r.height);
+    return o;
+}
+static JSCValue *screen_list(Server *s) {
+    GdkDisplay *display = gtk_widget_get_display(GTK_WIDGET(s->window));
+    GListModel *monitors = gdk_display_get_monitors(display);
+    JSCValue *array = jsc_value_new_array(s->json, G_TYPE_NONE);
+    for (guint i = 0; i < g_list_model_get_n_items(monitors); i++) {
+        GdkMonitor *m = g_list_model_get_item(monitors, i);
+        char *id = monitor_id(m, i);
+        JSCValue *item = object(s);
+        GdkRectangle frame, work;
+        gdk_monitor_get_geometry(m, &frame);
+        work_area(m, &work);
+        string(item, "id", id);
+        string(item, "name", gdk_monitor_get_model(m) ?: id);
+        put(item, "isPrimary", jsc_value_new_null(s->json));
+        boolean(item, "isBuiltIn", g_str_has_prefix(id, "eDP") || g_str_has_prefix(id, "LVDS"));
+        number(item, "scaleFactor", gdk_monitor_get_scale_factor(m));
+        put(item, "frame", rectangle(s, frame));
+        put(item, "workArea", rectangle(s, work));
+        jsc_value_object_set_property_at_index(array, i, item);
+        g_object_unref(item);
+        g_object_unref(m);
+        g_free(id);
+    }
+    return array;
+}
+static JSCValue *window_info(Server *s) {
+    GtkWidget *widget = GTK_WIDGET(s->window);
+    gtk_widget_realize(widget);
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(widget));
+    GdkDisplay *gd = gtk_widget_get_display(widget);
+    GdkRectangle rect = {0};
+    gtk_window_get_default_size(s->window, &rect.width, &rect.height);
+    Placement *p = placement(widget);
+    rect.x = p->x;
+    rect.y = p->y;
+    if (GDK_IS_X11_SURFACE(surface) && gtk_widget_get_mapped(widget)) {
+        Display *d = gdk_x11_display_get_xdisplay(gd);
+        Window child;
+        XWindowAttributes attr;
+        Window xid = gdk_x11_surface_get_xid(surface);
+        XGetWindowAttributes(d, xid, &attr);
+        XTranslateCoordinates(d, xid, DefaultRootWindow(d), 0, 0, &rect.x, &rect.y, &child);
+        int scale = gdk_surface_get_scale_factor(surface);
+        rect.x /= scale;
+        rect.y /= scale;
+        rect.width = attr.width / scale;
+        rect.height = attr.height / scale;
+    }
+    int edges[4];
+    frame_extents(surface, edges);
+    int scale = gdk_surface_get_scale_factor(surface);
+    if (gtk_widget_get_mapped(widget)) {
+        rect.x -= edges[0] / scale;
+        rect.y -= edges[2] / scale;
+    }
+    rect.width += (edges[0] + edges[1]) / scale;
+    rect.height += (edges[2] + edges[3]) / scale;
+    GListModel *monitors = gdk_display_get_monitors(gd);
+    char *id = g_strdup("");
+    GdkRectangle work = {0};
+    for (guint i = 0; i < g_list_model_get_n_items(monitors); i++) {
+        GdkMonitor *m = g_list_model_get_item(monitors, i);
+        GdkRectangle mr;
+        gdk_monitor_get_geometry(m, &mr);
+        if (i == 0 ||
+            (rect.x + rect.width / 2 >= mr.x && rect.x + rect.width / 2 < mr.x + mr.width &&
+             rect.y + rect.height / 2 >= mr.y && rect.y + rect.height / 2 < mr.y + mr.height)) {
+            g_free(id);
+            id = monitor_id(m, i);
+            work_area(m, &work);
+        }
+        g_object_unref(m);
+    }
+    JSCValue *o = object(s);
+    string(o, "screen", id);
+    g_free(id);
+    if (position_supported(s->window)) {
+        put(o, "frame", rectangle(s, rect));
+        number(o, "x", rect.x - work.x);
+        number(o, "y", rect.y - work.y);
+    } else {
+        put(o, "frame", jsc_value_new_null(s->json));
+        put(o, "x", jsc_value_new_null(s->json));
+        put(o, "y", jsc_value_new_null(s->json));
+    }
+    boolean(o, "visible", gtk_widget_get_visible(widget));
+    boolean(o, "focused", gtk_window_is_active(s->window));
+    return o;
+}
+typedef struct {
+    Request *request;
+    int x, y;
+    gint64 deadline;
+} MoveRequest;
+static void move_free(gpointer data) {
+    MoveRequest *m = data;
+    request_unref(m->request);
+    g_free(m);
+}
+static gboolean moved(gpointer data) {
+    MoveRequest *m = data;
+    Request *r = m->request;
+    if (r->done || r->client->closed)
+        return G_SOURCE_REMOVE;
+    JSCValue *o = window_info(r->client->server);
+    JSCValue *f = jsc_value_object_get_property(o, "frame");
+    double x = 0, y = 0;
+    get_number(f, "x", &x);
+    get_number(f, "y", &y);
+    g_object_unref(f);
+    // Window-manager requests are asynchronous and may be constrained by policy.
+    gboolean settled =
+        (fabs(x - m->x) <= 1 && fabs(y - m->y) <= 1) || g_get_monotonic_time() >= m->deadline;
+    if (settled)
+        reply(r, o, 0, NULL);
+    g_object_unref(o);
+    return settled ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
+}
+static void move_window(Request *r, JSCValue *params) {
+    Server *s = r->client->server;
+    if (!position_supported(s->window)) {
+        reply(r, NULL, -32004, "Window positioning requires X11");
+        return;
+    }
+    char *id = get_string(params, "screen"), *anchor = get_string(params, "anchor");
+    if (!jsc_value_object_has_property(params, "anchor"))
+        anchor = g_strdup("top-left");
+    double x = 0, y = 0;
+    gboolean valid = id && anchor &&
+                     (!strcmp(anchor, "top-left") || !strcmp(anchor, "top-right") ||
+                      !strcmp(anchor, "bottom-left") || !strcmp(anchor, "bottom-right"));
+    if (jsc_value_object_has_property(params, "x"))
+        valid &= get_number(params, "x", &x);
+    if (jsc_value_object_has_property(params, "y"))
+        valid &= get_number(params, "y", &y);
+    if (!valid || x < 0 || y < 0) {
+        reply(r, NULL, -32602,
+              "move requires a screen ID, nonnegative offsets and a corner anchor");
+        goto done;
+    }
+    if (gtk_window_is_fullscreen(s->window) || gtk_window_is_maximized(s->window)) {
+        reply(r, NULL, -32004, "Restore the window before moving");
+        goto done;
+    }
+    GListModel *monitors = gdk_display_get_monitors(gtk_widget_get_display(GTK_WIDGET(s->window)));
+    for (guint i = 0; i < g_list_model_get_n_items(monitors); i++) {
+        GdkMonitor *m = g_list_model_get_item(monitors, i);
+        char *candidate = monitor_id(m, i);
+        gboolean match = !strcmp(candidate, id);
+        g_free(candidate);
+        if (!match) {
+            g_object_unref(m);
+            continue;
+        }
+        GdkRectangle work;
+        work_area(m, &work);
+        g_object_unref(m);
+        int width, height;
+        gtk_window_get_default_size(s->window, &width, &height);
+        if (gtk_widget_get_mapped(GTK_WIDGET(s->window))) {
+            GdkSurface *sf = gtk_native_get_surface(GTK_NATIVE(s->window));
+            width = gdk_surface_get_width(sf);
+            height = gdk_surface_get_height(sf);
+        }
+        gtk_widget_realize(GTK_WIDGET(s->window));
+        GdkSurface *sf = gtk_native_get_surface(GTK_NATIVE(s->window));
+        int edges[4];
+        frame_extents(sf, edges);
+        int scale = gdk_surface_get_scale_factor(sf);
+        width += (edges[0] + edges[1]) / scale;
+        height += (edges[2] + edges[3]) / scale;
+        double max_x = MAX(0, work.width - width), max_y = MAX(0, work.height - height);
+        double left = g_str_has_suffix(anchor, "right") ? max_x - x : x;
+        double top = g_str_has_prefix(anchor, "bottom") ? max_y - y : y;
+        int target_x = work.x + (int)CLAMP(left, 0, max_x),
+            target_y = work.y + (int)CLAMP(top, 0, max_y);
+        if (turf_linux_set_position(s->window, target_x, target_y)) {
+            reply(r, NULL, -32002, "Window move failed");
+            goto done;
+        }
+        if (gtk_widget_get_mapped(GTK_WIDGET(s->window))) {
+            MoveRequest *m = g_new0(MoveRequest, 1);
+            m->request = request_ref(r);
+            m->x = target_x;
+            m->y = target_y;
+            m->deadline = g_get_monotonic_time() + 2000000;
+            g_timeout_add_full(G_PRIORITY_DEFAULT, 16, moved, m, move_free);
+        } else {
+            JSCValue *o = window_info(s);
+            reply(r, o, 0, NULL);
+            g_object_unref(o);
+        }
+        goto done;
+    }
+    reply(r, NULL, -32602, "Unknown screen; call screens again");
+done:
+    g_free(id);
+    g_free(anchor);
+}
+
 static void execute(Request *r, const char *method, JSCValue *params) {
     Server *s = r->client->server;
+    if (!gtk_widget_get_visible(GTK_WIDGET(s->window)) &&
+        (!strcmp(method, "click") || !strcmp(method, "key") || !strcmp(method, "typeText"))) {
+        reply(r, NULL, -32004, "Show the window before sending input");
+        return;
+    }
     if (!strcmp(method, "info")) {
         JSCValue *o = object(s);
         number(o, "protocolVersion", 1);
@@ -601,11 +953,16 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         string(o, "url", webkit_web_view_get_uri(s->view));
         boolean(o, "loading", webkit_web_view_is_loading(s->view));
         put(o, "viewport", viewport(s));
+        put(o, "window", window_info(s));
         put(o, "methods",
-            jsc_value_new_from_json(s->json,
-                                    "[\"info\",\"evaluate\",\"navigate\",\"screenshot\",\"resize\","
-                                    "\"click\",\"key\",\"typeText\",\"close\"]"));
+            jsc_value_new_from_json(
+                s->json,
+                "[\"info\",\"evaluate\",\"navigate\",\"screenshot\",\"resize\","
+                "\"screens\",\"move\",\"show\",\"click\",\"key\",\"typeText\",\"close\"]"));
         JSCValue *caps = object(s);
+        boolean(caps, "windowPosition", position_supported(s->window));
+        boolean(caps, "deferredShow", TRUE);
+        string(caps, "windowCoordinates", "gdk-logical");
         boolean(caps, "awaitPromises", TRUE);
         string(caps, "nativeInput", xtest_available(s) ? "x11-xtest" : "unsupported");
         boolean(caps, "keyRepeat", FALSE);
@@ -614,6 +971,18 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         number(caps, "maxRequestBytes", MAX_REQUEST);
         number(caps, "maxResponseBytes", MAX_RESPONSE);
         put(o, "capabilities", caps);
+        reply(r, o, 0, NULL);
+        g_object_unref(o);
+    } else if (!strcmp(method, "screens")) {
+        JSCValue *o = object(s);
+        put(o, "screens", screen_list(s));
+        reply(r, o, 0, NULL);
+        g_object_unref(o);
+    } else if (!strcmp(method, "move")) {
+        move_window(r, params);
+    } else if (!strcmp(method, "show")) {
+        turf_linux_show_window(s->window, s->background);
+        JSCValue *o = window_info(s);
         reply(r, o, 0, NULL);
         g_object_unref(o);
     } else if (!strcmp(method, "evaluate")) {
@@ -660,7 +1029,20 @@ static void execute(Request *r, const char *method, JSCValue *params) {
             width < 1 || height < 1 || width > 8192 || height > 8192)
             reply(r, NULL, -32602, "width and height must be numbers from 1 to 8192");
         else {
+            // A realized but unmapped GTK toplevel retains its initial surface
+            // size. Recreate that hidden surface so first map uses the new size.
+            if (!gtk_widget_get_visible(GTK_WIDGET(s->window)) &&
+                gtk_widget_get_realized(GTK_WIDGET(s->window)))
+                gtk_widget_unrealize(GTK_WIDGET(s->window));
             gtk_window_set_default_size(s->window, (int)width, (int)height);
+            if (!gtk_widget_get_visible(GTK_WIDGET(s->window))) {
+                JSCValue *o = object(s);
+                number(o, "width", (int)width);
+                number(o, "height", (int)height);
+                reply(r, o, 0, NULL);
+                g_object_unref(o);
+                return;
+            }
             TurfResizeRequest *resize = g_new0(TurfResizeRequest, 1);
             resize->request = request_ref(r);
             resize->width = (int)width;
@@ -799,8 +1181,13 @@ static gboolean incoming(GSocketService *service, GSocketConnection *connection,
 }
 void turf_linux_show_window(void *window, bool no_focus) {
     GtkWidget *widget = GTK_WIDGET(window);
+    if (gtk_widget_get_visible(widget))
+        return;
     gboolean background = no_focus || (server && server->background);
     gtk_widget_realize(widget);
+    Placement *p = placement(widget);
+    if (p->positioned)
+        turf_linux_set_position(window, p->x, p->y);
     GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(window));
     if (background && GDK_IS_X11_SURFACE(surface))
         gdk_x11_surface_set_user_time(surface, 0);

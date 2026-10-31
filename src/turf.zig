@@ -72,7 +72,6 @@ pub const Window = struct {
         config: WindowConfig,
         message_queue: *MessageQueue,
     ) !Window {
-        if (config.start_hidden and builtin.target.os.tag != .macos) return error.DeferredShowUnsupported;
         const platform = try backend.PlatformWindow.init(
             allocator,
             config,
@@ -133,7 +132,7 @@ pub const Window = struct {
     }
 
     /// Position the outer window in desktop points before or after showing.
-    /// Origin is the primary screen's top-left. Currently supported on macOS.
+    /// Origin is the primary screen's top-left. Supported on macOS, Windows, and Linux/X11.
     pub fn setPosition(self: *Window, x: i32, y: i32) !void {
         if (comptime @hasDecl(backend.PlatformWindow, "setPosition")) {
             try self.platform.setPosition(x, y);

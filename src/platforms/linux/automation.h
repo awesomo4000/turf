@@ -5,3 +5,5 @@
 int turf_linux_automation_start(void *view, void *window, const char *path, bool background);
 void turf_linux_automation_stop(void);
 void turf_linux_show_window(void *window, bool no_focus);
+
+int turf_linux_set_position(void *window, int x, int y);

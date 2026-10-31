@@ -3,8 +3,8 @@
 # Copyright (c) 2026 awesomo4000
 """Check page visibility and animation progress using Turf's Cocoa bridge.
 
-Requires an unlocked macOS GUI session and a Dell display. Test windows are
-centered in the lower third of the Dell before showing. Briefly changes focus, covers, and
+Requires an unlocked macOS GUI session and TURF_TEST_SCREEN set to a display-name
+substring. Test windows are centered in its lower third before showing. Briefly changes focus, covers, and
 minimizes test windows. Leave the desktop undisturbed during the test.
 Prints JSONL with native state, page state, and timestamped page events.
 """
@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    if not os.environ.get('TURF_TEST_SCREEN', '').strip():
+        raise SystemExit('Set TURF_TEST_SCREEN to a display-name substring before running GUI tests')
     with tempfile.TemporaryDirectory(prefix="turf-visibility-", dir="/tmp") as directory:
         binary = Path(directory) / "visibility"
         subprocess.run([

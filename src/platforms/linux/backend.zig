@@ -7,6 +7,7 @@ const common = @import("../../common.zig");
 const c = @import("bindings.zig");
 extern fn turf_linux_automation_start(view: ?*c.GtkWidget, window: ?*c.GtkWidget, path: [*:0]const u8, background: bool) c_int;
 extern fn turf_linux_automation_stop() void;
+extern fn turf_linux_set_position(window: ?*c.GtkWidget, x: c_int, y: c_int) c_int;
 extern fn turf_linux_show_window(window: ?*c.GtkWidget, no_focus: bool) void;
 
 // Platform implementation
@@ -19,6 +20,7 @@ pub const PlatformWindow = struct {
     main_loop: ?*c.GMainLoop = null,
     prng: std.Random.DefaultPrng,
     no_focus: bool,
+    start_hidden: bool,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -40,6 +42,7 @@ pub const PlatformWindow = struct {
         return PlatformWindow{
             .allocator = allocator,
             .no_focus = config.no_focus,
+            .start_hidden = config.start_hidden,
             .message_queue = message_queue,
             .prng = std.Random.DefaultPrng.init(@intCast(std.Io.Clock.real.now(std.Options.debug_io).toNanoseconds())),
         };
@@ -94,6 +97,11 @@ pub const PlatformWindow = struct {
         }
     }
 
+    pub fn setPosition(self: *PlatformWindow, x: i32, y: i32) !void {
+        if (self.gtk_window == null) return error.WindowNotCreated;
+        if (turf_linux_set_position(self.gtk_window, x, y) != 0) return error.WindowPositionUnsupported;
+    }
+
     pub fn startAutomation(self: *PlatformWindow, socket_path: [:0]const u8, background: bool) !void {
         if (self.webview == null or self.gtk_window == null) return error.WindowNotCreated;
         const result = turf_linux_automation_start(self.webview, self.gtk_window, socket_path, background);
@@ -127,7 +135,7 @@ pub const PlatformWindow = struct {
     }
 
     pub fn run(self: *PlatformWindow) void {
-        self.show();
+        if (!self.start_hidden) self.show();
         // GTK4 uses GMainLoop
         self.main_loop = c.g_main_loop_new(null, 0);
         defer {

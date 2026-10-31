@@ -87,11 +87,18 @@ int main(int argc, const char **argv) {
         background = argc > 1 && strcmp(argv[1], "--no-focus") == 0;
         previousApp = NSWorkspace.sharedWorkspace.frontmostApplication;
         TurfApplicationLoad();
-        NSScreen *target = nil;
-        for (NSScreen *screen in NSScreen.screens) {
-            if ([screen.localizedName.lowercaseString containsString:@"dell"]) { target = screen; break; }
+        const char *selection = getenv("TURF_TEST_SCREEN");
+        if (!selection || !selection[0]) {
+            fprintf(stderr, "Set TURF_TEST_SCREEN to a display-name substring\n"); return 1;
         }
-        if (!target) { fprintf(stderr, "Dell unavailable; refusing to show on another screen\n"); return 1; }
+        NSString *screenName = [[NSString stringWithUTF8String:selection]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSScreen *target = nil;
+        NSUInteger matches = 0;
+        for (NSScreen *screen in NSScreen.screens) {
+            if (screenName.length && [screen.localizedName localizedCaseInsensitiveContainsString:screenName]) { target = screen; matches++; }
+        }
+        if (matches != 1) { fprintf(stderr, "TURF_TEST_SCREEN must match exactly one display; refusing to show\n"); return 1; }
         NSCreateWindow(0, 0, 420, 220, "Turf visibility diagnostic", "", background, false);
         NSRect work = target.visibleFrame, frame = webView.window.frame;
         CGFloat x = NSMinX(work) + (work.size.width - frame.size.width) / 2;
