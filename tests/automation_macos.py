@@ -45,6 +45,40 @@ def feature_checks(path, folder, engine="WKWebView"):
         client.request(path, "click", point)
         wait_for(f"document.querySelector({json.dumps(selector)}).contains(window.lastClickTarget)")
 
+    if engine == 'WKWebView':
+        info = client.request(path, 'info')
+        assert info['capabilities']['windowPosition'] is True
+        screens = client.request(path, 'screens')['screens']
+        assert screens and len({s['id'] for s in screens}) == len(screens)
+        assert all(s['workArea']['width'] > 0 and s['scaleFactor'] > 0 for s in screens)
+        original = info['window']
+        # Prefer another external monitor when present. Moving stays non-activating.
+        selected = next((s for s in screens if not s['isBuiltIn'] and s['id'] != original['screen']),
+                        next((s for s in screens if not s['isBuiltIn']), screens[0]))
+        client.request(path, 'resize', {'width': 520, 'height': 360})
+        moved = client.request(path, 'move', {'screen': selected['id'], 'x': 18, 'y': 24})
+        assert moved['screen'] == selected['id'], moved
+        assert abs(moved['x'] - 18) <= 1 and abs(moved['y'] - 24) <= 1, moved
+        actual = client.request(path, 'info')['window']
+        assert actual['screen'] == moved['screen'] and actual['frame'] == moved['frame']
+        right = client.request(path, 'move', {'screen': selected['id'], 'anchor': 'top-right', 'x': 16, 'y': 16})
+        expected_x = max(0, selected['workArea']['width'] - right['frame']['width'] - 16)
+        assert abs(right['x'] - expected_x) <= 1 and abs(right['y'] - 16) <= 1, right
+        for anchor in ('bottom-left', 'bottom-right'):
+            bottom = client.request(path, 'move', {'screen': selected['id'], 'anchor': anchor, 'x': 12, 'y': 20})
+            expected_y = max(0, selected['workArea']['height'] - bottom['frame']['height'] - 20)
+            expected_x = 12 if anchor == 'bottom-left' else max(0, selected['workArea']['width'] - bottom['frame']['width'] - 12)
+            assert abs(bottom['x'] - expected_x) <= 1 and abs(bottom['y'] - expected_y) <= 1, bottom
+            assert bottom['focused'] == original['focused'], bottom
+        expect_error(path, 'move', {'screen': 'missing-display', 'x': 0, 'y': 0}, -32602)
+        expect_error(path, 'move', {'screen': selected['id'], 'x': True}, -32602)
+        expect_error(path, 'move', {'screen': selected['id'], 'y': -1}, -32602)
+        expect_error(path, 'move', {'screen': selected['id'], 'anchor': 'middle'}, -32602)
+        clamped = client.request(path, 'move', {'screen': selected['id'], 'x': 1e9, 'y': 1e9})
+        assert clamped['x'] + clamped['frame']['width'] <= selected['workArea']['width'] + 1
+        assert clamped['y'] + clamped['frame']['height'] <= selected['workArea']['height'] + 1
+        client.request(path, 'move', {'screen': selected['id'], 'anchor': 'top-right', 'x': 16, 'y': 16})
+
     background_linux = engine == "WebKitGTK" and client.request(path, "info")["background"]
     if background_linux:
         expect_error(path, 'click', {'x': 10, 'y': 10}, -32004)
@@ -89,8 +123,22 @@ def feature_checks(path, folder, engine="WKWebView"):
         evaluate("document.querySelector('#editor').value=''; document.querySelector('#editor').setSelectionRange(0,0)")
         client.request(path, 'key', {'key': 'a'})
         wait_for("document.querySelector('#editor').value === 'a'")
+        if engine == 'WKWebView':
+            # A page-owned terminal shortcut must receive exactly one down/up pair.
+            evaluate("window.terminalKeys=[]; window.recordTerminalKey=e=>{if(e.ctrlKey || e.altKey || ['Escape','Tab','ArrowLeft'].includes(e.key)){terminalKeys.push({type:e.type,ctrl:e.ctrlKey,alt:e.altKey});e.preventDefault();}}; window.addEventListener('keydown',recordTerminalKey,true); window.addEventListener('keyup',recordTerminalKey,true)")
+            try:
+                for key, modifiers in [('c', ['control']), ('d', ['control']), ('z', ['control']), ('x', ['alt']), ('Escape', []), ('Tab', []), ('ArrowLeft', [])]:
+                    evaluate('terminalKeys=[]')
+                    client.request(path, 'key', {'key': key, 'modifiers': modifiers})
+                    wait_for('terminalKeys.length >= 2')
+                    assert evaluate('terminalKeys.map(e=>e.type)') == ['keydown', 'keyup'], (key, evaluate('terminalKeys'))
+            finally:
+                evaluate("window.removeEventListener('keydown',recordTerminalKey,true);window.removeEventListener('keyup',recordTerminalKey,true)")
+        # Unmodified e must reach keyDown, not be consumed as a WebKit shortcut.
+        client.request(path, 'key', {'key': 'e'})
+        wait_for("document.querySelector('#editor').value === 'ae'")
         client.request(path, 'typeText', {'text': ' otter 🦦 café'})
-        wait_for("document.querySelector('#editor').value === 'a otter 🦦 café'")
+        wait_for("document.querySelector('#editor').value === 'ae otter 🦦 café'")
         client.request(path, 'key', {'key': 'a', 'modifiers': ['meta' if engine == 'WKWebView' else 'control']})
         wait_for("document.querySelector('#editor').selectionStart === 0 && document.querySelector('#editor').selectionEnd === document.querySelector('#editor').value.length")
         client.request(path, 'key', {'key': 'Backspace'})

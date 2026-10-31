@@ -97,7 +97,7 @@ static BOOL isShowingFileDialog = NO;
 //
 
 @implementation TurfWebView
-// Override performKeyEquivalent to prevent beeps while allowing events through
+// Handle application shortcuts and preserve WebKit's handling result.
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     // First, let the menu system handle standard shortcuts like Cmd+Q
     if ([[NSApp mainMenu] performKeyEquivalent:event]) {
@@ -125,15 +125,9 @@ static BOOL isShowingFileDialog = NO;
         }
     }
     
-    // Preserve WebKit's result so handled events are not dispatched again.
-    BOOL handled = [super performKeyEquivalent:event];
-    
-    // Always return YES for command keys to prevent beep
-    if ([event modifierFlags] & NSEventModifierFlagCommand) {
-        return YES;
-    }
-    
-    return handled;
+    // Only consume shortcuts WebKit actually handled. Unhandled keys must be
+    // allowed to reach the first responder, including terminal applications.
+    return [super performKeyEquivalent:event];
 }
 
 // Override noResponderFor to prevent beeps
@@ -184,19 +178,18 @@ static BOOL isShowingFileDialog = NO;
 }
 @end
 
-// Custom window class to suppress beeps
+// Keep ordinary typing out of the shortcut dispatch path.
 @interface TurfWindow : NSWindow
 @end
 
 @implementation TurfWindow
-// Override performKeyEquivalent to prevent beeps for unhandled shortcuts
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
-    // Let the WebView handle all key events first
-    if ([self.contentView isKindOfClass:[WKWebView class]]) {
-        // Return YES to indicate we've handled it (even if we haven't)
-        // This prevents the system beep
-        return YES;
-    }
+    // Ordinary typing belongs to keyDown, not WKWebView's shortcut path.
+    // That path can consume printable keys such as unmodified lowercase e.
+    NSEventModifierFlags shortcuts = NSEventModifierFlagCommand |
+        NSEventModifierFlagControl | NSEventModifierFlagOption;
+    if (!(event.modifierFlags & shortcuts)) return NO;
+
     return [super performKeyEquivalent:event];
 }
 @end

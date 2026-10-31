@@ -159,7 +159,7 @@ def grab(socket_path, source, output, chunk_bytes=256 * 1024):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("socket", help="Unix socket path or local Windows named pipe")
-    parser.add_argument("method", help="info, evaluate, navigate, screenshot, resize, click, key, typeText, grab, close")
+    parser.add_argument("method", help="info, evaluate, navigate, screenshot, resize, screens, move, click, key, typeText, grab, close")
     parser.add_argument("params", nargs="?", default="{}", help="JSON object")
     parser.add_argument("-o", "--output", type=Path, help="Save screenshot PNG or grabbed binary data")
     args = parser.parse_args()

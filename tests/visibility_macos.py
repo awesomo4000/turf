@@ -21,6 +21,7 @@ def main():
         subprocess.run([
             "clang", "-fobjc-arc", "-fblocks", "-Wno-incompatible-pointer-types",
             "-framework", "Cocoa", "-framework", "WebKit",
+            "-framework", "CoreGraphics",
             str(ROOT / "tests/visibility_macos.m"),
             str(ROOT / "src/platforms/macos/automation.m"), "-o", str(binary),
         ], env={**os.environ, "TMPDIR": directory}, check=True)

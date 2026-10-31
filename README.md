@@ -156,7 +156,7 @@ No private WebKit APIs are required. macOS does not require SIP changes.
 
 The macOS bridge now includes `automation.m` alongside `cocoa_bridge.m`; embedding
 builds that compile the bridge themselves must compile both with ARC and link
-Cocoa and WebKit. Linux builds compile `src/platforms/linux/automation.c` and
+Cocoa, WebKit, and CoreGraphics. Linux builds compile `src/platforms/linux/automation.c` and
 link GTK4, WebKitGTK 6, JavaScriptCoreGTK 6, and X11. The bundled library,
 executable, and demo builds already include the Linux bridge. Foreground native
 input also needs the XTest extension and `libXtst.so.6` at runtime.
@@ -182,6 +182,8 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
 | `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
+| `screens` | None; macOS only | `{screens: [...]}` with IDs, names, built-in/primary flags, scale factors, frames, and work areas |
+| `move` | `screen` ID; optional nonnegative `x`, `y` and `anchor`; macOS only | Actual window screen, frame, position, and focus state |
 | `click` | `x`, `y` in webview points from the top-left; optional `modifiers` | Dispatches a native left click |
 | `key` | `key`; optional `modifiers` and boolean `repeat` | Dispatches native key-down and key-up events |
 | `typeText` | `text` | Inserts Unicode text through the native text-input interface |
@@ -205,6 +207,36 @@ Linux and Windows reject overlapping navigation with `-32000`; wait for `info.lo
 to be false before navigating again. They reject embedded NULs in string parameters
 and numeric IDs outside the JavaScript safe-integer range; use string IDs for larger values.
 On Windows, requests arriving before WebView2 initializes return `-32000`; retry `info`.
+
+#### Screen selection and positioning
+
+On macOS, `info.capabilities.windowPosition` is true and `info.window` reports
+`screen`, `frame`, `x`, `y`, and `focused`. Check the advertised methods before
+using `screens` or `move`; Linux and Windows do not implement them yet.
+
+```bash
+python3 tools/turf-client.py /path/to/control.sock screens
+python3 tools/turf-client.py /path/to/control.sock move \
+  '{"screen":"ID-FROM-SCREENS","anchor":"top-right","x":16,"y":16}'
+```
+
+Screen frames and work areas use desktop logical points with a top-left origin
+on the primary display; other displays can have negative coordinates. A move
+uses offsets inward from a corner of the selected screen's work area, excluding
+the menu bar and Dock. Anchors are `top-left` (default), `top-right`, `bottom-left`,
+and `bottom-right`; offsets default to zero. Window frames include the title bar.
+Returned window `x` and `y` always measure from the work area's top-left corner,
+regardless of the requested anchor. `resize` continues to size the webview content.
+
+Moves clamp to the work area without resizing, activating, or raising the window.
+A window larger than the work area is aligned to its top-left and may overflow.
+Fullscreen windows must exit fullscreen first. Unknown display IDs return
+`-32602`; refresh `screens` after a display is connected or disconnected. IDs
+come from CoreGraphics display UUIDs with a numeric fallback. Treat them as opaque
+and rediscover them rather than assuming they persist across hardware changes.
+
+macOS embedders compiling the Cocoa bridge must link Cocoa, WebKit, and
+CoreGraphics. These are OS-provided frameworks; no additional library is bundled.
 
 #### Grab binary data
 

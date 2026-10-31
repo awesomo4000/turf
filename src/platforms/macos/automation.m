@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 awesomo4000
 #import <Cocoa/Cocoa.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import "automation.h"
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -75,6 +76,41 @@ static BOOL automationModifiers(id values, NSEventModifierFlags *flags) {
         *flags |= [names[value] unsignedIntegerValue];
     }
     return YES;
+}
+
+// Public automation coordinates use logical points, with a top-left origin.
+// Cocoa's desktop coordinates use a bottom-left origin, so convert at the edge.
+static NSDictionary *automationRect(NSRect rect) {
+    CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
+    return @{ @"x": @(NSMinX(rect)), @"y": @(desktopTop - NSMaxY(rect)),
+        @"width": @(rect.size.width), @"height": @(rect.size.height) };
+}
+
+static NSString *automationScreenID(NSScreen *screen) {
+    if (!screen) return @"";
+    CGDirectDisplayID display = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+    CFUUIDRef uuid = CGDisplayCreateUUIDFromDisplayID(display);
+    if (!uuid) return [NSString stringWithFormat:@"display-%u", display];
+    NSString *result = CFBridgingRelease(CFUUIDCreateString(NULL, uuid));
+    CFRelease(uuid);
+    return result;
+}
+
+static NSDictionary *automationScreenInfo(NSScreen *screen) {
+    CGDirectDisplayID display = [screen.deviceDescription[@"NSScreenNumber"] unsignedIntValue];
+    return @{ @"id": automationScreenID(screen), @"name": screen.localizedName,
+        @"isBuiltIn": @(CGDisplayIsBuiltin(display) != 0),
+        @"isPrimary": @(screen == NSScreen.screens.firstObject),
+        @"scaleFactor": @(screen.backingScaleFactor),
+        @"frame": automationRect(screen.frame), @"workArea": automationRect(screen.visibleFrame) };
+}
+
+static NSDictionary *automationWindowInfo(NSWindow *window) {
+    NSScreen *screen = window.screen ?: NSScreen.mainScreen;
+    NSRect frame = window.frame, work = screen.visibleFrame;
+    return @{ @"screen": automationScreenID(screen), @"frame": automationRect(frame),
+        @"x": @(NSMinX(frame) - NSMinX(work)), @"y": @(NSMaxY(work) - NSMaxY(frame)),
+        @"focused": @(window.isKeyWindow) };
 }
 
 // Resolve menu shortcuts against this window instead of the application's key window.
@@ -252,11 +288,44 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     WKWebView *view = self.view;
     if ([method isEqual:@"info"]) {
         reply(@{ @"protocolVersion": @1, @"pid": @(getpid()), @"engine": @"WKWebView",
-            @"background": @(self.background), @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
-            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"click", @"key", @"typeText", @"close"],
-            @"capabilities": @{ @"nativeInput": @"appkit", @"awaitPromises": @YES, @"screenshot": @"viewport",
+            @"background": @(self.background), @"window": automationWindowInfo(view.window), @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
+            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
+            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport",
                 @"maxRequestBytes": @(maxRequestBytes), @"maxResponseBytes": @(maxResponseBytes) },
             @"viewport": @{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) } }, 0, nil);
+    } else if ([method isEqual:@"screens"]) {
+        NSMutableArray *screens = [NSMutableArray array];
+        for (NSScreen *screen in NSScreen.screens) [screens addObject:automationScreenInfo(screen)];
+        reply(@{ @"screens": screens }, 0, nil);
+    } else if ([method isEqual:@"move"]) {
+        NSString *screenID = params[@"screen"];
+        id x = params[@"x"] ?: @0, y = params[@"y"] ?: @0;
+        NSString *anchor = params[@"anchor"] ?: @"top-left";
+        if (![screenID isKindOfClass:NSString.class] || !automationNumber(x) || !automationNumber(y) ||
+            [x doubleValue] < 0 || [y doubleValue] < 0 ||
+            ![anchor isKindOfClass:NSString.class] ||
+            ![@[@"top-left", @"top-right", @"bottom-left", @"bottom-right"] containsObject:anchor]) {
+            reply(nil, -32602, @"move requires a screen ID, nonnegative x/y offsets in points, and a valid corner anchor"); return;
+        }
+        NSScreen *selected = nil;
+        for (NSScreen *screen in NSScreen.screens) {
+            if ([automationScreenID(screen) isEqual:screenID]) { selected = screen; break; }
+        }
+        if (!selected) { reply(nil, -32602, @"Unknown or disconnected screen; call screens again"); return; }
+        NSWindow *window = view.window;
+        if (window.styleMask & NSWindowStyleMaskFullScreen) {
+            reply(nil, -32004, @"Exit fullscreen before moving the window"); return;
+        }
+        NSRect work = selected.visibleFrame, frame = window.frame;
+        CGFloat maxX = MAX(0, work.size.width - frame.size.width);
+        CGFloat maxY = MAX(0, work.size.height - frame.size.height);
+        CGFloat left = [anchor hasSuffix:@"right"] ? maxX - [x doubleValue] : [x doubleValue];
+        CGFloat top = [anchor hasPrefix:@"bottom"] ? maxY - [y doubleValue] : [y doubleValue];
+        left = MIN(maxX, MAX(0, left)); top = MIN(maxY, MAX(0, top));
+        [window setFrameOrigin:NSMakePoint(NSMinX(work) + left, NSMaxY(work) - top - frame.size.height)];
+        // Moving never activates or raises the window, even in foreground mode.
+        reply(automationWindowInfo(window), 0, nil);
+
     } else if ([method isEqual:@"evaluate"]) {
         if (![params[@"expression"] isKindOfClass:NSString.class]) { reply(nil, -32602, @"expression must be a string"); return; }
         if (@available(macOS 11.0, *)) {

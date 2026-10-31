@@ -79,6 +79,7 @@ pub fn build(b: *std.Build) void {
             addMacOSSDK(b, exe.root_module, macos_sdk);
             exe.root_module.linkFramework("Cocoa", .{});
             exe.root_module.linkFramework("WebKit", .{});
+            exe.root_module.linkFramework("CoreGraphics", .{});
             exe.root_module.addCSourceFile(.{
                 .file = b.path("src/platforms/macos/cocoa_bridge.m"),
                 .flags = &[_][]const u8{"-fobjc-arc"},
@@ -161,6 +162,7 @@ pub fn build(b: *std.Build) void {
             addMacOSSDK(b, demo.root_module, macos_sdk);
             demo.root_module.linkFramework("Cocoa", .{});
             demo.root_module.linkFramework("WebKit", .{});
+            demo.root_module.linkFramework("CoreGraphics", .{});
             demo.root_module.addCSourceFile(.{
                 .file = b.path("src/platforms/macos/cocoa_bridge.m"),
                 .flags = &[_][]const u8{"-fobjc-arc"},
