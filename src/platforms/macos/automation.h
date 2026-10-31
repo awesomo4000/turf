@@ -5,3 +5,5 @@ int TurfAutomationStart(WKWebView *view, const char *path, bool background);
 void TurfAutomationStop(void);
 void TurfAutomationNavigationFinished(WKNavigation *navigation, NSError *error);
 BOOL TurfAutomationIsBackground(void);
+
+void NSShowWindow(void);

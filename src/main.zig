@@ -16,13 +16,15 @@ pub fn main(init: std.process.Init) !void {
     _ = args.next(); // skip program name
     var target: ?[]const u8 = null;
     var no_focus = false;
+    var start_hidden = false;
     var automation_socket: ?[]const u8 = null;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--no-focus] [--automation-socket PATH] [URL or file path]\n" ++
+            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--no-focus] [--start-hidden] [--automation-socket PATH] [URL or file path]\n" ++
                 "       turf -h | --help\n\n" ++
                 "With no arguments, opens the default page.\n" ++
-                "--no-focus shows the window without activating it.\n\n" ++
+                "--no-focus shows the window without activating it.\n" ++
+                "--start-hidden waits for automation show before displaying the window (macOS).\n\n" ++
                 "Examples:\n" ++
                 "  turf\n" ++
                 "  turf https://example.com\n" ++
@@ -32,6 +34,8 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--automation-socket")) {
             if (automation_socket != null) return error.DuplicateAutomationSocket;
             automation_socket = args.next() orelse return error.MissingAutomationSocketPath;
+        } else if (std.mem.eql(u8, arg, "--start-hidden")) {
+            start_hidden = true;
         } else if (std.mem.eql(u8, arg, "--no-focus")) {
             no_focus = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
@@ -41,6 +45,8 @@ pub fn main(init: std.process.Init) !void {
             target = arg;
         }
     }
+
+    if (start_hidden and automation_socket == null) return error.StartHiddenRequiresAutomation;
 
     // Create message queue externally
     var message_queue = turf.MessageQueue.init(allocator);
@@ -56,6 +62,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .title = "Turf",
         .no_focus = no_focus,
+        .start_hidden = start_hidden,
     };
 
     var window = try turf.Window.init(

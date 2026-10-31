@@ -33,6 +33,7 @@ extern void onJavaScriptMessage(const char* message);
 //
 static WKWebView *webView = nil;
 static BOOL windowNoFocus = NO;
+static BOOL windowStartHidden = NO;
 static NSOpenPanel *openPanel = nil;
 static BOOL isShowingFileDialog = NO;
 
@@ -330,8 +331,9 @@ void NSLoadString(const char* html_content) {
 }
 
 void NSCreateWindow(int x, int y, int w, int h, 
-                    const char* title, const char* jsInject, bool no_focus) {
+                    const char* title, const char* jsInject, bool no_focus, bool start_hidden) {
     windowNoFocus = no_focus;
+    windowStartHidden = start_hidden;
     NSRect frame = NSMakeRect(x, y, w, h);
     TurfWindow* window = [[TurfWindow alloc] 
         initWithContentRect:frame
@@ -430,7 +432,13 @@ void NSCreateWindow(int x, int y, int w, int h,
     [window center];
 }
 
-void NSRunApplication(void) {
+void NSSetWindowPosition(int x, int y) {
+    CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
+    [webView.window setFrameOrigin:NSMakePoint(x, desktopTop - y - webView.window.frame.size.height)];
+}
+
+void NSShowWindow(void) {
+    if (!webView.window || webView.window.visible) return;
     if (windowNoFocus || TurfAutomationIsBackground()) {
         // Show above other windows without taking keyboard focus. Ordering behind
         // them can make WebKit report hidden and suspend animation frames.
@@ -439,6 +447,10 @@ void NSRunApplication(void) {
         [webView.window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     }
+}
+
+void NSRunApplication(void) {
+    if (!windowStartHidden) NSShowWindow();
     [NSApp run];
 }
 

@@ -14,8 +14,11 @@ extern fn NSCreateWindow(
     title: [*:0]const u8,
     js_inject: [*:0]const u8,
     no_focus: bool,
+    start_hidden: bool,
 ) void;
 extern fn NSRunApplication() void;
+extern fn NSShowWindow() void;
+extern fn NSSetWindowPosition(x: c_int, y: c_int) void;
 extern fn NSLoadURL(url: [*:0]const u8) void;
 extern fn NSLoadLocalFile(path: [*:0]const u8) void;
 extern fn NSLoadString(html_content: [*:0]const u8) void;
@@ -143,6 +146,7 @@ pub const PlatformWindow = struct {
                 config.title,
                 @ptrCast(turf_js.ptr),
                 config.no_focus,
+                config.start_hidden,
             );
             self.is_window_created = true;
         }
@@ -164,7 +168,12 @@ pub const PlatformWindow = struct {
 
     pub fn show(self: *PlatformWindow) void {
         _ = self;
-        // Window is shown automatically on macOS
+        NSShowWindow();
+    }
+
+    pub fn setPosition(self: *PlatformWindow, x: i32, y: i32) !void {
+        if (!self.is_window_created) return error.WindowNotCreated;
+        NSSetWindowPosition(x, y);
     }
 
     pub fn loadURL(self: *PlatformWindow, url: [:0]const u8) void {

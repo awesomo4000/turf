@@ -110,7 +110,7 @@ static NSDictionary *automationWindowInfo(NSWindow *window) {
     NSRect frame = window.frame, work = screen.visibleFrame;
     return @{ @"screen": automationScreenID(screen), @"frame": automationRect(frame),
         @"x": @(NSMinX(frame) - NSMinX(work)), @"y": @(NSMaxY(work) - NSMaxY(frame)),
-        @"focused": @(window.isKeyWindow) };
+        @"visible": @(window.visible), @"focused": @(window.isKeyWindow) };
 }
 
 // Resolve menu shortcuts against this window instead of the application's key window.
@@ -252,7 +252,23 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
                 if (![self writeResponse:[self handleLine:line] to:fd]) return;
                 // Close only after the acknowledgement has been written.
                 if (self.closeRequested) {
-                    dispatch_async(dispatch_get_main_queue(), ^{ TurfAutomationStop(); [self.view.window close]; });
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        NSWindow *window = self.view.window;
+                        BOOL wasVisible = window.visible;
+                        TurfAutomationStop();
+                        [window close];
+                        // AppKit does not trigger last-window termination for a
+                        // window that was never ordered onscreen. Honor the host's
+                        // termination policy explicitly in that case.
+                        if (!wasVisible) {
+                            for (NSWindow *other in NSApp.windows) {
+                                if (other.visible) return;
+                            }
+                            id<NSApplicationDelegate> delegate = NSApp.delegate;
+                            if ([delegate respondsToSelector:@selector(applicationShouldTerminateAfterLastWindowClosed:)] &&
+                                [delegate applicationShouldTerminateAfterLastWindowClosed:NSApp]) [NSApp terminate:nil];
+                        }
+                    });
                     return;
                 }
             }
@@ -286,13 +302,19 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     NSString *method = request[@"method"];
     NSDictionary *params = request[@"params"] ?: @{};
     WKWebView *view = self.view;
+    if (!view.window.visible && ([@[@"click", @"key", @"typeText"] containsObject:method])) {
+        reply(nil, -32004, @"Show the window before sending input"); return;
+    }
     if ([method isEqual:@"info"]) {
         reply(@{ @"protocolVersion": @1, @"pid": @(getpid()), @"engine": @"WKWebView",
             @"background": @(self.background), @"window": automationWindowInfo(view.window), @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
-            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
-            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport",
+            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"show", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
+            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"deferredShow": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport",
                 @"maxRequestBytes": @(maxRequestBytes), @"maxResponseBytes": @(maxResponseBytes) },
             @"viewport": @{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) } }, 0, nil);
+    } else if ([method isEqual:@"show"]) {
+        NSShowWindow();
+        reply(automationWindowInfo(view.window), 0, nil);
     } else if ([method isEqual:@"screens"]) {
         NSMutableArray *screens = [NSMutableArray array];
         for (NSScreen *screen in NSScreen.screens) [screens addObject:automationScreenInfo(screen)];

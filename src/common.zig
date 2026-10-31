@@ -25,6 +25,8 @@ pub const WindowConfig = struct {
     startup_logo: StartupLogo = .off,
     /// Show without activating the application.
     no_focus: bool = false,
+    /// macOS: run without showing until show() or the automation show method.
+    start_hidden: bool = false,
 };
 
 // Message structure for queuing

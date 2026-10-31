@@ -87,7 +87,17 @@ int main(int argc, const char **argv) {
         background = argc > 1 && strcmp(argv[1], "--no-focus") == 0;
         previousApp = NSWorkspace.sharedWorkspace.frontmostApplication;
         TurfApplicationLoad();
-        NSCreateWindow(0, 0, 420, 300, "Turf visibility diagnostic", "", background);
+        NSScreen *target = nil;
+        for (NSScreen *screen in NSScreen.screens) {
+            if ([screen.localizedName.lowercaseString containsString:@"dell"]) { target = screen; break; }
+        }
+        if (!target) { fprintf(stderr, "Dell unavailable; refusing to show on another screen\n"); return 1; }
+        NSCreateWindow(0, 0, 420, 220, "Turf visibility diagnostic", "", background, false);
+        NSRect work = target.visibleFrame, frame = webView.window.frame;
+        CGFloat x = NSMinX(work) + (work.size.width - frame.size.width) / 2;
+        CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame) - NSMaxY(work);
+        CGFloat y = top + work.size.height * 5 / 6 - frame.size.height / 2;
+        NSSetWindowPosition((int)x, (int)y);
         NSLoadString("<!doctype html><title>Visibility diagnostic</title><h1>Turf visibility test</h1><script>window.framesSeen=0;window.eventsSeen=[];function frame(){framesSeen++;requestAnimationFrame(frame)}requestAnimationFrame(frame);for(const type of ['visibilitychange','focus','blur']){(type==='visibilitychange'?document:window).addEventListener(type,()=>eventsSeen.push({type,time:performance.now(),visibility:document.visibilityState,focus:document.hasFocus()}));}</script>");
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ advance(); });
         NSRunApplication();

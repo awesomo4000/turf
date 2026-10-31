@@ -182,6 +182,7 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
 | `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
+| `show` | None; macOS only | Shows the window using its configured focus policy; returns window information |
 | `screens` | None; macOS only | `{screens: [...]}` with IDs, names, built-in/primary flags, scale factors, frames, and work areas |
 | `move` | `screen` ID; optional nonnegative `x`, `y` and `anchor`; macOS only | Actual window screen, frame, position, and focus state |
 | `click` | `x`, `y` in webview points from the top-left; optional `modifiers` | Dispatches a native left click |
@@ -208,10 +209,35 @@ to be false before navigating again. They reject embedded NULs in string paramet
 and numeric IDs outside the JavaScript safe-integer range; use string IDs for larger values.
 On Windows, requests arriving before WebView2 initializes return `-32000`; retry `info`.
 
+#### Deferred first display
+
+On macOS, start with `--start-hidden --automation-socket PATH` to run automation
+without displaying a window. The CLI requires an endpoint for this option so a
+client can show or close the window. Add `--no-focus` to preserve keyboard focus
+when it is eventually shown. Normal startup remains unchanged.
+
+Before showing, call `screens`, `resize`, and `move` to select the initial display
+and position, then call `show`. `info.window.visible` stays false until the window
+is ordered onscreen. This is native window visibility, not page visibility or
+occlusion. `show` is idempotent for an already visible window. Hidden windows
+reject `click`, `key`, and `typeText` with `-32004`; setup evaluation is available,
+but animation frames may be suspended until the window is shown.
+
+Embedders can use `WindowConfig.start_hidden = true` independently of automation.
+After `createWindow()`, call `try window.setPosition(x, y)` and `window.show()`
+before `run()`, or show later from the application's UI thread. `setPosition`
+uses the outer window's top-left in desktop logical points, relative to the
+primary screen's top-left. It neither shows nor activates the window. Automation
+`move` additionally supplies screen-relative anchors and clamping. Hidden startup
+and `setPosition` currently return unsupported errors on Linux and Windows.
+
+`python3 tests/deferred_show_macos.py` verifies this flow without activation,
+showing only on a connected Dell display, centered in its lower third.
+
 #### Screen selection and positioning
 
 On macOS, `info.capabilities.windowPosition` is true and `info.window` reports
-`screen`, `frame`, `x`, `y`, and `focused`. Check the advertised methods before
+`screen`, `frame`, `x`, `y`, `visible`, and `focused`. Check the advertised methods before
 using `screens` or `move`; Linux and Windows do not implement them yet.
 
 ```bash
@@ -415,7 +441,8 @@ They compile a passive foreground-app observer with `clang` and fail if the test
 Turf process becomes foreground during startup, input, or shutdown. The observer
 creates no window and does not activate any application.
 
-The separate visibility test compiles Turf's Cocoa bridge into a diagnostic
+The separate visibility test requires a Dell display and positions its windows
+in the lower-third center before showing. It compiles Turf's Cocoa bridge into a diagnostic
 program. It compares normal and no-focus startup, focused and unfocused visible
 windows, full occlusion, minimization, and recovery. JSONL output records native
 window state, page visibility/focus events, and animation counts over two-second

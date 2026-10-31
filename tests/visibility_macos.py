@@ -3,7 +3,8 @@
 # Copyright (c) 2026 awesomo4000
 """Check page visibility and animation progress using Turf's Cocoa bridge.
 
-Requires an unlocked macOS GUI session. Briefly changes focus, covers, and
+Requires an unlocked macOS GUI session and a Dell display. Test windows are
+centered in the lower third of the Dell before showing. Briefly changes focus, covers, and
 minimizes test windows. Leave the desktop undisturbed during the test.
 Prints JSONL with native state, page state, and timestamped page events.
 """
