@@ -32,12 +32,17 @@ def main():
                 # Detach only those mounts before TemporaryDirectory removes it.
                 for name in ('doc', 'gvfs'):
                     mount = Path(runtime) / name
-                    if os.path.ismount(mount):
+                    # stat-based ismount() can miss a disconnected FUSE mount.
+                    # These generated /tmp paths contain no mountinfo escapes.
+                    def mounted():
+                        return any(line.split()[4] == str(mount)
+                                   for line in Path('/proc/self/mountinfo').read_text().splitlines())
+                    if mounted():
                         unmount = shutil.which('fusermount3') or shutil.which('fusermount')
                         if not unmount:
                             raise RuntimeError(f'Cannot unmount test runtime: {mount}')
                         result = subprocess.run([unmount, '-u', '-z', str(mount)], capture_output=True)
-                        if result.returncode and os.path.ismount(mount):
+                        if result.returncode and mounted():
                             raise RuntimeError(f'Cannot unmount test runtime: {mount}')
     # A private display needs no window manager. X11 input targets Turf directly.
     import automation_linux
