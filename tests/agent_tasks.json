@@ -1,0 +1,8 @@
+[
+  {"id":"error-detail","prompt":"Evaluate an expression that throws Error('agent-probe'). Report its error kind, JavaScript name, and message as JSON. Do not report success merely because a response arrived.","answer":{"kind":"javascript_exception","name":"Error","message":"agent-probe"}},
+  {"id":"frame-context","prompt":"Read childReady from the iframe #child and report {\"childReady\":true}. Determine the correct evaluation context without reading source files.","answer":{"childReady":true},"oracle":"document.querySelector('#child').contentWindow.childReady === true"},
+  {"id":"condition-wait","prompt":"Wait until #delayed exists, then set the main heading text to its textContent. Do not use a fixed-duration sleep as a readiness check. Report {\"heading\":\"ready\"}.","answer":{"heading":"ready"},"oracle":"document.querySelector('h1').textContent === 'ready'"},
+  {"id":"console-diagnosis","prompt":"Use diagnostics to identify the fixture's timer error and unhandled promise rejection. Report JSON with timer and rejection containing their respective messages. Do not inspect the fixture source.","answer":{"timer":"timer-failure","rejection":"rejection-failure"}},
+  {"id":"cursor-replay","prompt":"Record a diagnostic cursor, emit a console message 'agent-cursor-probe', then show that two independent reads from that cursor can both retrieve it. Report {\"replayable\":true}.","answer":{"replayable":true}},
+  {"id":"bounded-console","prompt":"Emit 1000 console messages in one synchronous evaluation. Read diagnostics and report whether entries were dropped and whether the retained buffer respects its advertised capacity. Report {\"lossReported\":true,\"bounded\":true}.","answer":{"lossReported":true,"bounded":true}}
+]

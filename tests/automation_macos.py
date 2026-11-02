@@ -30,7 +30,7 @@ def expect_error(path, method, params, code):
         raise AssertionError(f"{method} should fail")
 
 
-def feature_checks(path, folder, engine="WKWebView"):
+def feature_checks(path, folder, engine="WKWebView", check_position=True):
     def evaluate(expression):
         return client.request(path, "evaluate", {"expression": expression}).get("value")
     def wait_for(expression):
@@ -45,7 +45,7 @@ def feature_checks(path, folder, engine="WKWebView"):
         client.request(path, "click", point)
         wait_for(f"document.querySelector({json.dumps(selector)}).contains(window.lastClickTarget)")
 
-    if engine == 'WKWebView':
+    if engine == 'WKWebView' and check_position:
         info = client.request(path, 'info')
         assert info['capabilities']['windowPosition'] is True
         screens = client.request(path, 'screens')['screens']
@@ -225,7 +225,7 @@ def run_checks(check_focus, engine="WKWebView", background=True):
                 assert client.request(path, "evaluate", {"expression": "undefined"}) == {"type": "undefined"}
                 assert client.request(path, "evaluate", {"expression": "null"}) == {"type": "null", "value": None}
                 expect_error(path, "evaluate", {"expression": "(() => { throw new Error('test'); })()"}, -32002)
-                expect_error(path, "evaluate", {"expression": "(() => { const a = {}; a.self = a; return a; })()"}, -32002)
+                expect_error(path, "evaluate", {"expression": "(() => { const a = {}; a.self = a; return a; })()"}, -32003 if engine == "WKWebView" else -32002)
                 expect_error(path, "unknown", {}, -32601)
                 expect_error(path, "resize", {"width": True, "height": 100}, -32602)
                 expect_error(path, "navigate", {"url": "relative.html"}, -32602)

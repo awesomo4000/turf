@@ -179,6 +179,7 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | --- | --- | --- |
 | `info` | None | Protocol version, PID, engine, page title, URL, loading state, methods, capabilities, and viewport dimensions |
 | `evaluate` | `expression` string | `{type, value}` after awaiting promises; `undefined` omits `value` |
+| `diagnostics` | macOS: `action` start/read/stop; read accepts `session`, `after`, `limit` | Bounded console and page errors with independent cursors |
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
 | `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
@@ -195,6 +196,57 @@ Values use JavaScript JSON serialization: cycles and BigInts produce errors;
 non-finite numbers become null, and function/undefined object properties are
 omitted. Object handles, cross-origin frame selection, and debugger
 breakpoints are not part of this protocol.
+
+On macOS, evaluation errors include structured `error.data`. JavaScript throws
+and rejected promises use code `-32002`, kind `javascript_exception`, with `name`,
+`message`, optional `stack`, `sourceURL`, `line`, `column`, and `context: "main"`.
+Thrown primitives are supported. Result serialization failures use `-32003` and
+kind `serialization_error`; native WebKit failures use `-32002` and kind
+`native_error`. Error text is bounded. Stack/location availability depends on the
+engine. Timeouts use `-32001`, kind `timeout`, and `mayStillRun: true`: do not
+retry mutations automatically. Check `info.capabilities.structuredErrors` before
+relying on these fields on other platforms.
+
+#### macOS diagnostics
+
+Diagnostics are disabled until explicitly started. Enable them **before navigating**
+to capture startup logs and newly loaded frames:
+
+```bash
+python3 tools/turf-client.py "$socket" diagnostics '{"action":"start"}'
+python3 tools/turf-client.py "$socket" navigate '{"url":"http://127.0.0.1:8000/diagnostics.html"}'
+python3 tools/turf-client.py "$socket" diagnostics '{"action":"read","after":0,"limit":64}'
+python3 tools/turf-client.py "$socket" diagnostics '{"action":"stop"}'
+```
+
+`start` returns a session ID and is idempotent while enabled. A fresh start after
+stop clears the buffer and creates a new session. Pass that `session` on reads to
+reject stale cursors (`-32004`). Each reader keeps its own `nextCursor` and passes
+it as `after`; reads never consume entries. `limit` defaults to 64, maximum 256.
+`latestCursor` marks the latest observed sequence; `droppedSinceCursor` counts
+observed losses after the supplied cursor, independently of the page size.
+
+Entries contain `sequence`, `documentId`, `isMainFrame`, frame `url`, page
+`timestamp`, native `receivedAt` (milliseconds since epoch), `kind`, `level`,
+`args`, and `truncated`. Kinds include console, error, unhandledrejection, and
+document attachment. Document IDs are capture-local identifiers, not frame handles.
+Native storage retains at most 256 entries and 1 MiB of encoded entry data;
+`bufferBytes`, `capacity`, and `maxBytes` expose those bounds. Page queues retain
+64 entries before flushing. Overflow drops oldest entries and reports loss.
+Previews bound strings, nesting, properties, and arguments; they are snapshots,
+not remote object handles.
+
+Capture uses page JavaScript instrumentation, preserves original console calls,
+and restores wrappers on stop without replacing a later application override.
+Starting on an existing page attaches its main frame immediately; already loaded
+subframes require navigation for capture. Stopping retains the readable buffer
+but discards pending page batches. This is not a complete browser console or
+network log: engines can redact errors (including `Script error.` on file pages),
+pages can replace instrumentation, and navigation or process loss can discard
+unflushed events without a count. It is a development aid, not a security boundary.
+
+See [the local test and agent trial guide](tests/AUTOMATION.md) and
+[the remaining automation work](TODO.md).
 
 Commands execute sequentially on each connection. macOS serves one active client
 at a time; Linux accepts up to 16 clients and Windows up to 8, so a pending evaluation

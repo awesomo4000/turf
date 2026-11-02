@@ -157,9 +157,22 @@ def grab(socket_path, source, output, chunk_bytes=256 * 1024):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples (replace SOCKET with your explicit endpoint):
+  turf-client.py SOCKET evaluate '{"expression":"Promise.resolve({answer:42})"}'
+  turf-client.py SOCKET diagnostics '{"action":"start"}'
+  turf-client.py SOCKET diagnostics '{"after":0,"limit":64}'
+  turf-client.py SOCKET screenshot -o /tmp/turf.png
+
+Evaluation awaits promises and returns {type,value}; do not JSON.stringify objects.
+On failure, the CLI exits nonzero and writes the RPC error JSON to stderr.
+macOS diagnostics are opt-in. Start before navigation to capture startup/frame logs.
+Read results include session, nextCursor, latestCursor, droppedSinceCursor, and entries.
+Pass session and after=nextCursor on subsequent reads; reading does not clear logs.
+A timeout does not cancel JavaScript. Do not automatically retry mutating commands.
+""")
     parser.add_argument("socket", help="Unix socket path or local Windows named pipe")
-    parser.add_argument("method", help="info, evaluate, navigate, screenshot, resize, screens, move, show, click, key, typeText, grab, close")
+    parser.add_argument("method", help="info, evaluate, navigate, screenshot, resize, screens, move, show, diagnostics, click, key, typeText, grab, close")
     parser.add_argument("params", nargs="?", default="{}", help="JSON object")
     parser.add_argument("-o", "--output", type=Path, help="Save screenshot PNG or grabbed binary data")
     args = parser.parse_args()

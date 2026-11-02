@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Turf diagnostic fixture</title>
+<h1>Diagnostic fixture</h1>
+<button id="trigger">Trigger failure</button>
+<script>
+console.info('fixture-startup', {ready: true});
+window.fixtureReady = true;
+document.querySelector('#trigger').onclick = () => { throw new Error('button-failure'); };
+setTimeout(() => { throw new Error('timer-failure'); }, 50);
+setTimeout(() => { Promise.reject(new Error('rejection-failure')); }, 75);
+setTimeout(() => {
+  const el = document.createElement('span'); el.id = 'delayed'; el.textContent = 'ready';
+  document.body.append(el);
+}, 100);
+</script>
+<iframe id="child" src="child.html"></iframe>

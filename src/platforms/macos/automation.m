@@ -3,6 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import "automation.h"
+#import "automation_scripts.h"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
@@ -16,7 +17,7 @@ static const NSUInteger maxRequestBytes = 1024 * 1024;
 static const NSUInteger maxResponseBytes = 32 * 1024 * 1024;
 typedef void (^AutomationReply)(id result, NSInteger code, NSString *message);
 
-@interface TurfAutomationServer : NSObject
+@interface TurfAutomationServer : NSObject <WKScriptMessageHandler>
 @property (atomic) BOOL stopped;
 @property (nonatomic) BOOL background;
 @property (atomic) BOOL closeRequested;
@@ -27,6 +28,15 @@ typedef void (^AutomationReply)(id result, NSInteger code, NSString *message);
 @property (nonatomic) dev_t socketDevice;
 @property (nonatomic, strong) WKNavigation *navigation;
 @property (nonatomic, copy) AutomationReply navigationReply;
+@property (nonatomic, strong) NSMutableArray *diagnostics;
+@property (nonatomic, strong) NSMutableDictionary *diagnosticFrames;
+@property (nonatomic) NSUInteger diagnosticBytes;
+@property (nonatomic) unsigned long long diagnosticSequence;
+@property (nonatomic, copy) NSString *diagnosticSession;
+@property (nonatomic, copy) NSString *diagnosticHandler;
+@property (nonatomic, copy) NSString *diagnosticState;
+@property (nonatomic, strong) WKUserScript *diagnosticScript;
+- (void)stopDiagnostics;
 - (void)serve;
 - (void)execute:(NSDictionary *)request reply:(AutomationReply)reply;
 - (void)removeSocket;
@@ -46,9 +56,11 @@ static BOOL waitForSocket(int fd, short events, TurfAutomationServer *server, NS
 }
 
 static NSData *responseData(id requestID, id result, NSInteger code, NSString *message) {
+    NSMutableDictionary *detail = [@{ @"code": @(code), @"message": message ?: @"Request failed" } mutableCopy];
+    if (code && result) detail[@"data"] = result;
     NSDictionary *response = code
         ? @{ @"jsonrpc": @"2.0", @"id": requestID ?: NSNull.null,
-             @"error": @{ @"code": @(code), @"message": message ?: @"Request failed" } }
+             @"error": detail }
         : @{ @"jsonrpc": @"2.0", @"id": requestID ?: NSNull.null, @"result": result ?: NSNull.null };
     NSData *json = [NSJSONSerialization dataWithJSONObject:response options:0 error:nil];
     if (!json || json.length > maxResponseBytes) {
@@ -163,6 +175,110 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
 }
 
 @implementation TurfAutomationServer
+- (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
+    if (self.stopped || !self.diagnosticScript || ![message.name isEqual:self.diagnosticHandler]) return;
+    NSDictionary *body = [message.body isKindOfClass:NSDictionary.class] ? message.body : nil;
+    if (![body[@"documentId"] isKindOfClass:NSString.class] || [body[@"documentId"] length] > 128 ||
+        ![body[@"entries"] isKindOfClass:NSArray.class] || [body[@"entries"] count] > 64) return;
+    NSNumber *lost = body[@"dropped"];
+    if (automationNumber(lost) && lost.doubleValue > 0) self.diagnosticSequence += (unsigned long long)MIN(lost.doubleValue, 1000000);
+    if (self.diagnosticFrames.count < 128) self.diagnosticFrames[body[@"documentId"]] = message.frameInfo;
+    for (id item in body[@"entries"]) {
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        NSMutableDictionary *entry = [item mutableCopy];
+        entry[@"sequence"] = @(++self.diagnosticSequence);
+        entry[@"documentId"] = body[@"documentId"];
+        entry[@"isMainFrame"] = @(message.frameInfo.mainFrame);
+        NSString *url = message.frameInfo.request.URL.absoluteString ?: @"";
+        entry[@"url"] = [url substringToIndex:MIN(url.length, 2048)];
+        entry[@"receivedAt"] = @(NSDate.date.timeIntervalSince1970 * 1000);
+        NSData *encoded = [NSJSONSerialization dataWithJSONObject:entry options:0 error:nil];
+        if (!encoded || encoded.length > 8192) continue; // The sequence gap reports this loss.
+        [self.diagnostics addObject:@{ @"entry": entry, @"bytes": @(encoded.length) }];
+        self.diagnosticBytes += encoded.length;
+        while (self.diagnostics.count > 256 || self.diagnosticBytes > 1024 * 1024) {
+            self.diagnosticBytes -= [self.diagnostics.firstObject[@"bytes"] unsignedIntegerValue];
+            [self.diagnostics removeObjectAtIndex:0];
+        }
+    }
+}
+- (void)stopDiagnostics {
+    if (!self.diagnosticScript) return;
+    WKUserContentController *controller = self.view.configuration.userContentController;
+    [controller removeScriptMessageHandlerForName:self.diagnosticHandler];
+    // Materialize the collection before removing scripts: WebKit exposes a live array.
+    NSMutableArray *scripts = [NSMutableArray array];
+    for (WKUserScript *script in controller.userScripts) {
+        if (![script.source isEqual:self.diagnosticScript.source]) [scripts addObject:script];
+    }
+    [controller removeAllUserScripts];
+    for (WKUserScript *script in scripts) [controller addUserScript:script];
+    if (@available(macOS 11.0, *)) {
+        NSString *cleanup = @"const state = window[key]; if (state) state.stop();";
+        [self.view callAsyncJavaScript:cleanup arguments:@{ @"key": self.diagnosticState }
+            inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:nil];
+        for (WKFrameInfo *frame in self.diagnosticFrames.allValues) {
+            if (!frame.mainFrame) [self.view callAsyncJavaScript:cleanup arguments:@{ @"key": self.diagnosticState }
+                inFrame:frame inContentWorld:WKContentWorld.pageWorld completionHandler:nil];
+        }
+    }
+    self.diagnosticScript = nil;
+    [self.diagnosticFrames removeAllObjects];
+}
+- (void)diagnosticsRequest:(NSDictionary *)params reply:(AutomationReply)reply {
+    NSString *action = params[@"action"] ?: @"read";
+    if ([action isEqual:@"start"]) {
+        if (!self.diagnosticScript) {
+            self.diagnostics = [NSMutableArray array]; self.diagnosticFrames = [NSMutableDictionary dictionary];
+            self.diagnosticBytes = 0; self.diagnosticSequence = 0;
+            self.diagnosticSession = NSUUID.UUID.UUIDString;
+            NSString *token = [self.diagnosticSession stringByReplacingOccurrencesOfString:@"-" withString:@""];
+            self.diagnosticHandler = [@"turfDiagnostics" stringByAppendingString:token];
+            self.diagnosticState = [@"__turfDiagnostics" stringByAppendingString:token];
+            NSString *source = [turfDiagnosticsScript stringByReplacingOccurrencesOfString:@"HANDLER_NAME"
+                withString:[NSString stringWithFormat:@"\"%@\"", self.diagnosticHandler]];
+            source = [source stringByReplacingOccurrencesOfString:@"STATE_KEY"
+                withString:[NSString stringWithFormat:@"\"%@\"", self.diagnosticState]];
+            self.diagnosticScript = [[WKUserScript alloc] initWithSource:source
+                injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:NO];
+            WKUserContentController *controller = self.view.configuration.userContentController;
+            [controller addScriptMessageHandler:self name:self.diagnosticHandler];
+            [controller addUserScript:self.diagnosticScript];
+            [self.view evaluateJavaScript:source completionHandler:^(id value, NSError *error) {
+                if (error) { [self stopDiagnostics]; reply(nil, -32002, error.localizedDescription); }
+                else reply(@{ @"enabled": @YES, @"session": self.diagnosticSession }, 0, nil);
+            }];
+        } else reply(@{ @"enabled": @YES, @"session": self.diagnosticSession }, 0, nil);
+        return;
+    }
+    if ([action isEqual:@"stop"]) {
+        [self stopDiagnostics];
+        reply(@{ @"enabled": @NO, @"session": self.diagnosticSession ?: (id)NSNull.null }, 0, nil);
+        return;
+    }
+    if (![action isEqual:@"read"]) { reply(nil, -32602, @"diagnostics action must be start, read, or stop"); return; }
+    id after = params[@"after"] ?: @0, limit = params[@"limit"] ?: @64;
+    if (!automationNumber(after) || [after doubleValue] < 0 || floor([after doubleValue]) != [after doubleValue] ||
+        [after doubleValue] > self.diagnosticSequence || !automationNumber(limit) || [limit doubleValue] < 1 ||
+        [limit doubleValue] > 256 || floor([limit doubleValue]) != [limit doubleValue]) {
+        reply(nil, -32602, @"after must be an existing nonnegative cursor; limit must be 1 through 256"); return;
+    }
+    if (params[@"session"] && ![params[@"session"] isEqual:self.diagnosticSession]) {
+        reply(nil, -32004, @"Diagnostic session changed; read again without the old cursor"); return;
+    }
+    unsigned long long cursor = [after unsignedLongLongValue], available = 0;
+    NSMutableArray *entries = [NSMutableArray array];
+    for (NSDictionary *record in self.diagnostics) {
+        NSDictionary *entry = record[@"entry"];
+        if ([entry[@"sequence"] unsignedLongLongValue] <= cursor) continue;
+        available++;
+        if (entries.count < [limit unsignedIntegerValue]) [entries addObject:entry];
+    }
+    reply(@{ @"enabled": self.diagnosticScript ? @YES : @NO, @"session": self.diagnosticSession ?: (id)NSNull.null,
+        @"entries": entries, @"nextCursor": entries.count ? entries.lastObject[@"sequence"] : @(self.diagnosticSequence),
+        @"latestCursor": @(self.diagnosticSequence), @"droppedSinceCursor": @(self.diagnosticSequence - cursor - available),
+        @"capacity": @256, @"maxBytes": @(1024 * 1024), @"bufferBytes": @(self.diagnosticBytes) }, 0, nil);
+}
 - (void)removeSocket {
     struct stat st;
     if (lstat(self.path.fileSystemRepresentation, &st) == 0 && S_ISSOCK(st.st_mode)
@@ -208,7 +324,7 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     @synchronized(lock) {
         if (!completed) {
             completed = YES;
-            response = responseData(requestID, nil, -32001, @"Request timed out; execution may still finish");
+            response = responseData(requestID, @{ @"kind": @"timeout", @"mayStillRun": @YES }, -32001, @"Request timed out; execution may still finish");
         }
     }
     return response;
@@ -308,10 +424,12 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     if ([method isEqual:@"info"]) {
         reply(@{ @"protocolVersion": @1, @"pid": @(getpid()), @"engine": @"WKWebView",
             @"background": @(self.background), @"window": automationWindowInfo(view.window), @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
-            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"show", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
-            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"deferredShow": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport",
+            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"diagnostics", @"show", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
+            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"deferredShow": @YES, @"structuredErrors": @YES, @"diagnostics": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport",
                 @"maxRequestBytes": @(maxRequestBytes), @"maxResponseBytes": @(maxResponseBytes) },
             @"viewport": @{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) } }, 0, nil);
+    } else if ([method isEqual:@"diagnostics"]) {
+        [self diagnosticsRequest:params reply:reply];
     } else if ([method isEqual:@"show"]) {
         NSShowWindow();
         reply(automationWindowInfo(view.window), 0, nil);
@@ -352,14 +470,23 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
         if (![params[@"expression"] isKindOfClass:NSString.class]) { reply(nil, -32602, @"expression must be a string"); return; }
         if (@available(macOS 11.0, *)) {
             // Return JSON by value. JSON.stringify errors reject cycles and BigInts explicitly.
-            NSString *body = @"const value = await (0, eval)(expression); return JSON.stringify({type: value === null ? 'null' : typeof value, value});";
+            NSString *body = turfEvaluateScript;
             [view callAsyncJavaScript:body arguments:@{ @"expression": params[@"expression"] }
                 inFrame:nil inContentWorld:WKContentWorld.pageWorld completionHandler:^(id result, NSError *error) {
-                if (error) { reply(nil, -32002, error.localizedDescription); return; }
+                if (error) { reply(@{ @"kind": @"native_error", @"nativeDomain": error.domain, @"nativeCode": @(error.code), @"context": @"main" }, -32002, error.localizedDescription); return; }
                 NSData *data = [result isKindOfClass:NSString.class] ? [result dataUsingEncoding:NSUTF8StringEncoding] : nil;
                 id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-                if (!value) reply(nil, -32003, @"JavaScript result cannot be serialized");
-                else reply(value, 0, nil);
+                if (![value isKindOfClass:NSDictionary.class] || ![value[@"ok"] isKindOfClass:NSNumber.class] ||
+                    (![value[@"result"] isKindOfClass:NSDictionary.class] && ![value[@"error"] isKindOfClass:NSDictionary.class])) {
+                    reply(@{ @"kind": @"serialization_error", @"context": @"main" }, -32003, @"JavaScript result cannot be serialized");
+                }
+                else if ([value[@"ok"] boolValue]) reply(value[@"result"], 0, nil);
+                else {
+                    NSDictionary *detail = value[@"error"];
+                    NSInteger code = [detail[@"kind"] isEqual:@"serialization_error"] ? -32003 : -32002;
+                    NSString *message = [detail[@"message"] isKindOfClass:NSString.class] ? detail[@"message"] : @"JavaScript evaluation failed";
+                    reply(detail, code, message);
+                }
             }];
         } else reply(nil, -32000, @"Evaluation requires macOS 11 or newer");
     } else if ([method isEqual:@"navigate"]) {
@@ -525,6 +652,7 @@ int TurfAutomationStart(WKWebView *view, const char *path, bool background) {
 void TurfAutomationStop(void) {
     TurfAutomationServer *server = automationServer;
     if (!server) return;
+    [server stopDiagnostics];
     server.stopped = YES;
     server.navigationReply = nil;
     server.navigation = nil;
