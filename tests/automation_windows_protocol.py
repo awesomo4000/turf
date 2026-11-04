@@ -89,7 +89,7 @@ def main():
                         assert evaluate('undefined') == {'type': 'undefined'}
                         assert evaluate('null') == {'type': 'null', 'value': None}
                         suite.expect_error(pipe, 'evaluate', {'expression': 'throw new Error("test")'}, -32002)
-                        suite.expect_error(pipe, 'evaluate', {'expression': '(()=>{let a={};a.a=a;return a})()'}, -32002)
+                        suite.expect_error(pipe, 'evaluate', {'expression': '(()=>{let a={};a.a=a;return a})()'}, -32003)
                         suite.expect_error(pipe, 'resize', {'width': True, 'height': 100}, -32602)
                         suite.expect_error(pipe, 'navigate', {'url': 'relative.html'}, -32602)
                         suite.expect_error(pipe, 'unknown', {}, -32601)

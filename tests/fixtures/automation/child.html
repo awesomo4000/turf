@@ -1,3 +1,11 @@
 <!doctype html><meta charset="utf-8"><title>Diagnostic child</title>
 <script>console.warn('child-startup'); window.childReady = true;</script>
 <p>This is a separate evaluation context.</p>
+<script>
+// Let the supervisor observe wrapper teardown across an origin boundary.
+addEventListener('message', event => {
+    if (event.data === 'probe-diagnostics' && event.source === parent) {
+        parent.postMessage({diagnosticsProbe: Object.getOwnPropertyNames(window).some(key => key.startsWith('__turfDiagnostics'))}, '*');
+    }
+});
+</script>

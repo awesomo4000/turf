@@ -45,6 +45,12 @@ def main():
                         if result.returncode and mounted():
                             raise RuntimeError(f'Cannot unmount test runtime: {mount}')
     # A private display needs no window manager. X11 input targets Turf directly.
+    if '--diagnostics' in sys.argv:
+        sys.argv.remove('--inside-xvfb')
+        sys.argv.remove('--diagnostics')
+        import automation_diagnostics_portable
+        automation_diagnostics_portable.main()
+        return 0
     import automation_linux
     import automation_macos as suite
     sys.argv.remove('--inside-xvfb')

@@ -16,7 +16,7 @@ def main():
     screen_name = os.environ.get('TURF_TEST_SCREEN', '').strip()
     if not screen_name:
         raise SystemExit('Set TURF_TEST_SCREEN to a display-name substring before running GUI tests')
-    binary = ROOT / 'zig-out/bin/turf'
+    binary = Path(os.environ.get('TURF_TEST_BINARY', ROOT / 'zig-out/bin/turf')).resolve()
     with tempfile.TemporaryDirectory(prefix='turf-deferred-', dir='/tmp') as directory:
         folder = Path(directory)
         observer = folder / 'focus-guard'
@@ -40,6 +40,7 @@ def main():
                     time.sleep(.02)
                 def info():
                     return client.request(endpoint, 'info')
+                host_pid = info()['pid']
                 assert info()['capabilities']['deferredShow']
                 assert not info()['window']['visible']
                 for method, params in [('key', {'key': 'e'}), ('click', {'x': 10, 'y': 10}), ('typeText', {'text': 'e'})]:
@@ -80,7 +81,7 @@ def main():
                 time.sleep(.1)
                 assert guard.poll() is None
                 entries = [json.loads(line) for line in (folder / 'focus.jsonl').read_text().splitlines()]
-                assert not any(row['pid'] == process.pid for row in entries), entries
+                assert not any(row['pid'] == host_pid for row in entries), entries
                 # A client can also close a deferred window without ever showing it.
                 hidden_endpoint = folder / 'never-shown.sock'
                 process = subprocess.Popen([str(binary), '--no-focus', '--start-hidden',
@@ -89,11 +90,13 @@ def main():
                 while not hidden_endpoint.exists():
                     assert process.poll() is None and time.monotonic() < deadline
                     time.sleep(.02)
-                assert not client.request(hidden_endpoint, 'info')['window']['visible']
+                hidden_info = client.request(hidden_endpoint, 'info')
+                host_pid = hidden_info['pid']
+                assert not hidden_info['window']['visible']
                 client.request(hidden_endpoint, 'close')
                 assert process.wait(timeout=10) == 0
                 entries = [json.loads(line) for line in (folder / 'focus.jsonl').read_text().splitlines()]
-                assert not any(row['pid'] == process.pid for row in entries), entries
+                assert not any(row['pid'] == host_pid for row in entries), entries
                 print(f"PASS: hidden startup, placement before show on {target['name']} lower-third center, rendering, input, and focus preservation")
             finally:
                 if process and process.poll() is None:

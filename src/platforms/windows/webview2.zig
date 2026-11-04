@@ -2,6 +2,7 @@
 // Copyright (c) 2025-2026 awesomo4000
 
 const std = @import("std");
+extern "ole32" fn CoTaskMemFree(?*anyopaque) callconv(WINAPI) void;
 const builtin = @import("builtin");
 pub const win = std.os.windows;
 
@@ -1472,6 +1473,11 @@ const WebMessageReceivedHandler = extern struct {
         if (result == S_OK and message != null) {
             // Convert from UTF-16 to UTF-8
             const message_slice = std.mem.span(message.?);
+            defer CoTaskMemFree(@ptrCast(message.?));
+            if (message_slice.len > 1024*1024) return S_OK;
+            const allocated_message = std.unicode.utf16LeToUtf8Alloc(std.heap.page_allocator,message_slice) catch return S_OK;
+            defer std.heap.page_allocator.free(allocated_message);
+            if (@import("automation.zig").diagnosticMessage(allocated_message)) return S_OK;
             var utf8_buffer: [4096]u8 = undefined;
             const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buffer, message_slice) catch {
                 return S_OK;

@@ -146,6 +146,25 @@ try window.run();
 // window.deinit() stops automation; window.stopAutomation() can stop it earlier.
 ```
 
+On macOS, `run()` returns when its window/event loop closes, so the embedding
+application can continue and deinitialize the window before its caller-owned
+queue. Repeated sequential windows are tested; concurrent windows and an
+independently owned Cocoa event loop are not covered. Lifecycle, loading, and
+JavaScript evaluation calls must run on the main thread. `sendMessage` can run
+from worker threads with a thread-safe window allocator; its queue allocator must
+also support concurrent allocation/free. Join application producers before teardown.
+
+`MessageQueue.init` now limits pending native messages to 1,024 entries and 8 MiB
+of copied names/payloads. Use `MessageQueue.initWithLimits` to choose other
+`max_messages` and `max_bytes` bounds.
+A full queue returns `error.QueueFull`; handle that error by retrying later or
+coalescing application updates. `push` transfers ownership only on success.
+On macOS, only one additional batch can be in flight to WebKit, and delivery does
+not rely on hidden-page timers. Navigation discards undelivered messages for the
+old document. Queue acceptance is not a delivery acknowledgment; send application
+messages after the target document is ready. These downstream delivery guarantees
+have not yet been ported to Linux/Windows.
+
 For Unix sockets, the parent directory must already exist, belong to the current user, and have no
 group or other permissions, typically mode `0700`. Turf creates a `0600` socket
 and accepts connections only from the same user. Existing paths are never
@@ -179,7 +198,7 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | --- | --- | --- |
 | `info` | None | Protocol version, PID, engine, page title, URL, loading state, methods, capabilities, and viewport dimensions |
 | `evaluate` | `expression` string | `{type, value}` after awaiting promises; `undefined` omits `value` |
-| `diagnostics` | macOS: `action` start/read/stop; read accepts `session`, `after`, `limit` | Bounded console and page errors with independent cursors |
+| `diagnostics` | `action` start/read/stop; read accepts `session`, `after`, `limit` | Bounded console and page errors with independent cursors |
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
 | `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
@@ -197,17 +216,17 @@ non-finite numbers become null, and function/undefined object properties are
 omitted. Object handles, cross-origin frame selection, and debugger
 breakpoints are not part of this protocol.
 
-On macOS, evaluation errors include structured `error.data`. JavaScript throws
+Evaluation errors include structured `error.data`. JavaScript throws
 and rejected promises use code `-32002`, kind `javascript_exception`, with `name`,
 `message`, optional `stack`, `sourceURL`, `line`, `column`, and `context: "main"`.
 Thrown primitives are supported. Result serialization failures use `-32003` and
-kind `serialization_error`; native WebKit failures use `-32002` and kind
+kind `serialization_error`; native engine failures use `-32002` and kind
 `native_error`. Error text is bounded. Stack/location availability depends on the
 engine. Timeouts use `-32001`, kind `timeout`, and `mayStillRun: true`: do not
 retry mutations automatically. Check `info.capabilities.structuredErrors` before
-relying on these fields on other platforms.
+relying on these fields when connecting to older hosts.
 
-#### macOS diagnostics
+#### Diagnostics
 
 Diagnostics are disabled until explicitly started. Enable them **before navigating**
 to capture startup logs and newly loaded frames:
@@ -219,7 +238,9 @@ python3 tools/turf-client.py "$socket" diagnostics '{"action":"read","after":0,"
 python3 tools/turf-client.py "$socket" diagnostics '{"action":"stop"}'
 ```
 
-`start` returns a session ID and is idempotent while enabled. A fresh start after
+`start` returns a session ID and is idempotent while enabled. On Windows/Linux,
+concurrent diagnostics commands during installation return `-32000`; wait for the
+initial start response before issuing another command. A fresh start after
 stop clears the buffer and creates a new session. Pass that `session` on reads to
 reject stale cursors (`-32004`). Each reader keeps its own `nextCursor` and passes
 it as `after`; reads never consume entries. `limit` defaults to 64, maximum 256.
@@ -243,7 +264,13 @@ subframes require navigation for capture. Stopping retains the readable buffer
 but discards pending page batches. This is not a complete browser console or
 network log: engines can redact errors (including `Script error.` on file pages),
 pages can replace instrumentation, and navigation or process loss can discard
-unflushed events without a count. It is a development aid, not a security boundary.
+unflushed events without a count. Linux/Windows frame URLs and main-frame flags
+come from the injected script; macOS gets those fields from WebKit. Windows relays
+child-frame batches through their parents using `postMessage`. Stop propagates to
+child frames asynchronously. These messages use a private per-session marker and
+are intercepted before the embedding application's message callback. Applications
+should leave the `__turfDiagnostics` message/state prefix to Turf. All capture runs
+in the page world and is a development aid, not a security boundary.
 
 See [the local test and agent trial guide](tests/AUTOMATION.md) and
 [the remaining automation work](TODO.md).

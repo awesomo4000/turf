@@ -148,6 +148,14 @@ pub const Window = struct {
     }
 
     pub fn loadFile(self: *Window, path: [:0]const u8) !void {
+        if (comptime @hasDecl(backend.PlatformWindow, "loadFile")) {
+            const absolute = try getAbsolutePath(self.allocator, path);
+            defer self.allocator.free(absolute);
+            const terminated = try self.allocator.dupeSentinel(u8, absolute, 0);
+            defer self.allocator.free(terminated);
+            self.platform.loadFile(terminated);
+            return;
+        }
         // Convert to absolute path if needed
         const abs_path = try getAbsolutePath(self.allocator, path);
         defer self.allocator.free(abs_path);
@@ -184,10 +192,8 @@ pub const Window = struct {
         );
         defer self.allocator.free(json_data);
 
-        const json_data_z = try self.allocator.dupeSentinel(u8, json_data, 0);
-        // Don't free json_data_z - the queue takes ownership
-
-        try self.message_queue.push(message_type, json_data_z);
+        // The queue may use a different allocator from the window.
+        try self.message_queue.pushCopy(message_type, json_data);
     }
 
     pub fn run(self: *Window) !void {
@@ -208,15 +214,95 @@ pub const Window = struct {
 
 // Utility function to get absolute path
 fn getAbsolutePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const cwd = try std.process.currentPathAlloc(std.Options.debug_io, allocator);
-    defer allocator.free(cwd);
-
     if (std.fs.path.isAbsolute(path)) {
         return allocator.dupe(u8, path);
     }
-
+    const cwd = try std.process.currentPathAlloc(std.Options.debug_io, allocator);
+    defer allocator.free(cwd);
     return std.fs.path.join(allocator, &[_][]const u8{ cwd, path });
 }
 
 // Export platform-specific types
 pub const PlatformWindow = backend.PlatformWindow;
+
+test {
+    _ = @import("common.zig");
+    _ = @import("native_messages.zig");
+}
+
+// sendMessage only uses the allocator and queue; no native window is needed.
+fn exerciseSendMessage(allocator: std.mem.Allocator) !void {
+    var queue = MessageQueue.init(allocator);
+    defer queue.deinit();
+    var window: Window = undefined;
+    window.allocator = allocator;
+    window.message_queue = &queue;
+    try window.sendMessage("event", .{ .text = "quote\"\\\n🦦", .optional = @as(?u32, null), .values = [_]i32{ -1, 0, 42 } });
+    var batch = try queue.popAll();
+    defer common.freeMessages(allocator, &batch);
+    try std.testing.expectEqual(1, batch.items.len);
+    try std.testing.expectEqualStrings("{\"text\":\"quote\\\"\\\\\\n🦦\",\"optional\":null,\"values\":[-1,0,42]}", batch.items[0].data);
+}
+
+test "sendMessage serializes structured values and cleans up every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, exerciseSendMessage, .{});
+}
+
+test "sendMessage supports separate window and queue allocators" {
+    var queue = MessageQueue.init(std.testing.allocator);
+    defer queue.deinit();
+    {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var window: Window = undefined;
+        window.allocator = arena.allocator();
+        window.message_queue = &queue;
+        try window.sendMessage("event", "owned by queue");
+    }
+    var batch = try queue.popAll();
+    defer common.freeMessages(queue.allocator, &batch);
+    try std.testing.expectEqualStrings("\"owned by queue\"", batch.items[0].data);
+}
+
+fn sendFromWorker(window: *Window, producer: usize, failed: *std.atomic.Value(bool)) void {
+    for (0..100) |index| {
+        window.sendMessage("worker", .{ .producer = producer, .index = index }) catch {
+            failed.store(true, .release);
+            return;
+        };
+    }
+}
+
+test "sendMessage supports concurrent producers while a consumer drains" {
+    var queue = MessageQueue.init(std.testing.allocator);
+    defer queue.deinit();
+    var window: Window = undefined;
+    window.allocator = std.testing.allocator;
+    window.message_queue = &queue;
+    var failed: std.atomic.Value(bool) = .init(false);
+    var threads: [4]std.Thread = undefined;
+    var started: usize = 0;
+    defer for (threads[0..started]) |thread| thread.join();
+    for (&threads, 0..) |*thread, producer| {
+        thread.* = try std.Thread.spawn(.{}, sendFromWorker, .{ &window, producer, &failed });
+        started += 1;
+    }
+    var next: [4]usize = @splat(0);
+    var received: usize = 0;
+    var attempts: usize = 0;
+    while (received < 400 and attempts < 10000) : (attempts += 1) {
+        try std.testing.expect(!failed.load(.acquire));
+        var batch = try queue.popAll();
+        defer common.freeMessages(queue.allocator, &batch);
+        for (batch.items) |message| {
+            const parsed = try std.json.parseFromSlice(struct { producer: usize, index: usize }, std.testing.allocator, message.data, .{});
+            defer parsed.deinit();
+            try std.testing.expectEqual(next[parsed.value.producer], parsed.value.index);
+            next[parsed.value.producer] += 1;
+            received += 1;
+        }
+        if (batch.items.len == 0) try std.Io.sleep(std.Options.debug_io, .fromMilliseconds(1), .awake);
+    }
+    try std.testing.expectEqual(400, received);
+    for (next) |count| try std.testing.expectEqual(100, count);
+}

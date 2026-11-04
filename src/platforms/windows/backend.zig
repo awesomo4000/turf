@@ -248,23 +248,14 @@ pub const PlatformWindow = struct {
                 std.Io.sleep(std.Options.debug_io, .fromMilliseconds(interval_ms), .awake) catch break;
                 continue;
             };
-            defer messages.deinit(window.allocator);
+            defer common.freeMessages(window.message_queue.allocator, &messages);
             
             for (messages.items) |msg| {
-                defer {
-                    window.allocator.free(msg.type);
-                    window.allocator.free(msg.data);
-                }
-                
                 // Format message for PostWebMessageAsJson
                 const json_msg = std.fmt.allocPrint(
                     window.allocator,
-                    \\{{
-                    \\  "type": "{s}",
-                    \\  "data": {s}
-                    \\}}
-                ,
-                    .{ msg.type, msg.data },
+                    "{f}",
+                    .{msg},
                 ) catch continue;
                 defer window.allocator.free(json_msg);
                 

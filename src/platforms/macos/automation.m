@@ -55,6 +55,23 @@ static BOOL waitForSocket(int fd, short events, TurfAutomationServer *server, NS
     return NO;
 }
 
+static BOOL clientDisconnected(int fd) {
+    struct pollfd state = { .fd = fd, .events = POLLIN };
+    if (poll(&state, 1, 0) <= 0) return NO;
+    if (state.revents & (POLLERR | POLLNVAL)) return YES;
+    if (state.revents & (POLLIN | POLLHUP)) {
+        char byte;
+        ssize_t count = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (count == 0 || (state.revents & POLLHUP)) {
+            // Darwin reports POLLHUP for SHUT_WR too. A zero-byte send checks
+            // whether the peer still accepts a response without changing framing.
+            return send(fd, "", 0, 0) < 0 && errno != EINTR && errno != EAGAIN;
+        }
+        return count < 0 && errno != EINTR && errno != EAGAIN;
+    }
+    return NO;
+}
+
 static NSData *responseData(id requestID, id result, NSInteger code, NSString *message) {
     NSMutableDictionary *detail = [@{ @"code": @(code), @"message": message ?: @"Request failed" } mutableCopy];
     if (code && result) detail[@"data"] = result;
@@ -287,7 +304,7 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     }
 }
 
-- (NSData *)handleLine:(NSData *)line {
+- (NSData *)handleLine:(NSData *)line client:(int)fd {
     id request = [NSJSONSerialization JSONObjectWithData:line options:NSJSONReadingFragmentsAllowed error:nil];
     if (!request) return responseData(nil, nil, -32700, @"Invalid JSON");
     if (![request isKindOfClass:NSDictionary.class]) return responseData(nil, nil, -32600, @"Expected a JSON-RPC request object");
@@ -319,6 +336,15 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     });
     NSTimeInterval deadline = [NSDate timeIntervalSinceReferenceDate] + 30;
     while (!self.stopped && [NSDate timeIntervalSinceReferenceDate] < deadline) {
+        if (clientDisconnected(fd)) {
+            @synchronized(lock) {
+                if (!completed) {
+                    completed = YES;
+                    response = responseData(requestID, @{ @"mayStillRun": @YES }, -32000, @"Client disconnected");
+                }
+            }
+            break;
+        }
         if (dispatch_semaphore_wait(finished, dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC)) == 0) break;
     }
     @synchronized(lock) {
@@ -365,10 +391,11 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
             NSData *line = [buffer subdataWithRange:NSMakeRange(0, length)];
             [buffer replaceBytesInRange:NSMakeRange(0, length + 1) withBytes:NULL length:0];
             @autoreleasepool {
-                if (![self writeResponse:[self handleLine:line] to:fd]) return;
+                BOOL written = [self writeResponse:[self handleLine:line client:fd] to:fd];
                 // Close only after the acknowledgement has been written.
                 if (self.closeRequested) {
                     dispatch_async(dispatch_get_main_queue(), ^{
+                        if (automationServer != self || self.stopped) return;
                         NSWindow *window = self.view.window;
                         BOOL wasVisible = window.visible;
                         TurfAutomationStop();
@@ -387,6 +414,7 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
                     });
                     return;
                 }
+                if (!written) return;
             }
             deadline = [NSDate timeIntervalSinceReferenceDate] + 10;
         }
@@ -502,11 +530,15 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
             : [view loadRequest:[NSURLRequest requestWithURL:url]];
         WKNavigation *navigation = self.navigation;
         if (!navigation) { self.navigationReply = nil; reply(nil, -32002, @"Navigation could not start"); return; }
+        __weak TurfAutomationServer *weakServer = self;
+        __weak WKNavigation *weakNavigation = navigation;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 29 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            if (self.navigation == navigation && self.navigationReply) {
-                AutomationReply pending = self.navigationReply;
-                self.navigationReply = nil; self.navigation = nil;
-                [view stopLoading];
+            TurfAutomationServer *server = weakServer;
+            WKNavigation *expected = weakNavigation;
+            if (server && !server.stopped && expected && server.navigation == expected && server.navigationReply) {
+                AutomationReply pending = server.navigationReply;
+                server.navigationReply = nil; server.navigation = nil;
+                [server.view stopLoading];
                 pending(nil, -32001, @"Navigation timed out");
             }
         });
@@ -657,6 +689,8 @@ void TurfAutomationStop(void) {
     server.navigationReply = nil;
     server.navigation = nil;
     [server removeSocket];
+    // The server loop retires on a worker; release its UI reference here on main.
+    server.view = nil;
     automationServer = nil;
 }
 

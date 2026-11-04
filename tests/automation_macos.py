@@ -225,7 +225,7 @@ def run_checks(check_focus, engine="WKWebView", background=True):
                 assert client.request(path, "evaluate", {"expression": "undefined"}) == {"type": "undefined"}
                 assert client.request(path, "evaluate", {"expression": "null"}) == {"type": "null", "value": None}
                 expect_error(path, "evaluate", {"expression": "(() => { throw new Error('test'); })()"}, -32002)
-                expect_error(path, "evaluate", {"expression": "(() => { const a = {}; a.self = a; return a; })()"}, -32003 if engine == "WKWebView" else -32002)
+                expect_error(path, "evaluate", {"expression": "(() => { const a = {}; a.self = a; return a; })()"}, -32003)
                 expect_error(path, "unknown", {}, -32601)
                 expect_error(path, "resize", {"width": True, "height": 100}, -32602)
                 expect_error(path, "navigate", {"url": "relative.html"}, -32602)

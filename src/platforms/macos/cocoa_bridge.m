@@ -5,18 +5,41 @@
 #import <WebKit/WebKit.h>
 #import <dispatch/dispatch.h>
 #import "automation.h"
+#include <stdatomic.h>
 
 // Declare the Zig callback functions
 extern void onWindowEvent(int x, int y, int width, int height);
 extern void onWindowGeometryEvent(int x, int y, int width, int height);
 extern void onJavaScriptMessage(const char* message);
+extern void onDocumentChanging(void);
+static atomic_ullong documentGeneration = 1;
+static atomic_ullong pendingMessageGeneration = 0;
+static void documentChanging(void) {
+    atomic_fetch_add(&documentGeneration, 1);
+    onDocumentChanging();
+}
+bool NSIsMainThread(void) { return NSThread.isMainThread; }
+unsigned long long NSMessageGeneration(void) { return atomic_load(&documentGeneration); }
+bool NSMessagesReady(void) { return atomic_load(&pendingMessageGeneration) == 0; }
 
+// Only the event loop owned by Turf should return through Window.run().
+static BOOL turfRunActive = NO;
 
 // AppDelegate is the main app delegate that handles the app lifecycle
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @end
 
 @implementation AppDelegate
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    if (!turfRunActive) return NSTerminateNow;
+    TurfAutomationStop();
+    [sender stop:nil];
+    // Wake AppKit if the stop request came from a dispatch callback.
+    [sender postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
+        location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0
+        context:nil subtype:0 data1:0 data2:0] atStart:YES];
+    return NSTerminateCancel;
+}
 - (void)applicationWillTerminate:(NSNotification *)notification {
     TurfAutomationStop();
 }
@@ -32,6 +55,8 @@ extern void onJavaScriptMessage(const char* message);
 // isShowingFileDialog is a flag to track if the file dialog is showing
 //
 static WKWebView *webView = nil;
+static NSWindow *turfWindow = nil;
+static AppDelegate *turfAppDelegate = nil;
 static BOOL windowNoFocus = NO;
 static BOOL windowStartHidden = NO;
 static NSOpenPanel *openPanel = nil;
@@ -75,6 +100,10 @@ static BOOL isShowingFileDialog = NO;
 }
 - (void)webView:(WKWebView *)view didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     TurfAutomationNavigationFinished(navigation, error);
+}
+
+- (void)webView:(WKWebView *)view didStartProvisionalNavigation:(WKNavigation *)navigation {
+    documentChanging();
 }
 
 // Navigation delegate methods to persist zoom across reloads
@@ -277,234 +306,311 @@ static void setupMainMenu(void) {
 
 
 bool TurfApplicationLoad(void) {
-    // Suppress WebKit console warnings
-    // setenv("WKWebViewDisableRemoteViewDisplayLinkWarnings", "1", 1);
-    // setenv("OS_ACTIVITY_MODE", "disable", 1);
-    
-    [NSApplication sharedApplication];
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    
-    // Set up app delegate
-    AppDelegate *appDelegate = [[AppDelegate alloc] init];
-    [NSApp setDelegate:appDelegate];
-    setupMainMenu();
-    windowDelegate = [[WindowDelegate alloc] init];
-    webViewDelegate = [[WebViewDelegate alloc] init];
-    
-    // Initialize the open panel
-    openPanel = [NSOpenPanel openPanel];
-    [openPanel setCanChooseFiles:YES];
-    [openPanel setCanChooseDirectories:NO];
-    [openPanel setAllowsMultipleSelection:NO];
-    
-    return true;
+    @autoreleasepool {
+        if (turfAppDelegate) return true;
+        // Suppress WebKit console warnings
+        // setenv("WKWebViewDisableRemoteViewDisplayLinkWarnings", "1", 1);
+        // setenv("OS_ACTIVITY_MODE", "disable", 1);
+
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+
+        // Set up app delegate
+        turfAppDelegate = [[AppDelegate alloc] init];
+        [NSApp setDelegate:turfAppDelegate];
+        setupMainMenu();
+        windowDelegate = [[WindowDelegate alloc] init];
+        webViewDelegate = [[WebViewDelegate alloc] init];
+
+        // Initialize the open panel
+        openPanel = [NSOpenPanel openPanel];
+        [openPanel setCanChooseFiles:YES];
+        [openPanel setCanChooseDirectories:NO];
+        [openPanel setAllowsMultipleSelection:NO];
+
+        return true;
+    }
 }
 
 void NSLoadURL(const char* url) {
-    if (webView != nil) {
-        NSURL *nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url]];
-        NSURLRequest *request = [NSURLRequest requestWithURL:nsurl];
-        [webView loadRequest:request];
+    @autoreleasepool {
+        documentChanging();
+        if (webView != nil) {
+            NSURL *nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url]];
+            NSURLRequest *request = [NSURLRequest requestWithURL:nsurl];
+            [webView loadRequest:request];
+        }
     }
 }
 
 void NSLoadLocalFile(const char* path) {
-    if (webView != nil) {
-        NSString *nsPath = [NSString stringWithUTF8String:path];
-        NSLog(@"Loading file from path: %@", nsPath);
-        NSURL *fileURL = [NSURL fileURLWithPath:nsPath];
-        NSLog(@"File URL: %@", fileURL);
-        [webView loadFileURL:fileURL 
-            allowingReadAccessToURL:[fileURL URLByDeletingLastPathComponent]];        
-    } else {
-        NSLog(@"WebView is nil when trying to load file: %s", path);
-    }
+    @autoreleasepool {
+        documentChanging();
+        if (webView != nil) {
+            NSString *nsPath = [NSString stringWithUTF8String:path];
+            NSURL *fileURL = [NSURL fileURLWithPath:nsPath];
+            [webView loadFileURL:fileURL
+                allowingReadAccessToURL:[fileURL URLByDeletingLastPathComponent]];
+        } else {
+            NSLog(@"WebView is nil when trying to load file: %s", path);
+        }
 
+    }
 }
 
 
 void NSLoadString(const char* html_content) {
-    if (webView != nil) {
-        NSString *htmlString = [NSString stringWithUTF8String:html_content];
-        [webView loadHTMLString:htmlString baseURL:nil];
+    @autoreleasepool {
+        documentChanging();
+        if (webView != nil) {
+            NSString *htmlString = [NSString stringWithUTF8String:html_content];
+            [webView loadHTMLString:htmlString baseURL:nil];
+        }
     }
 }
 
-void NSCreateWindow(int x, int y, int w, int h, 
+void NSCreateWindow(int x, int y, int w, int h,
                     const char* title, const char* jsInject, bool no_focus, bool start_hidden) {
-    windowNoFocus = no_focus;
-    windowStartHidden = start_hidden;
-    NSRect frame = NSMakeRect(x, y, w, h);
-    TurfWindow* window = [[TurfWindow alloc] 
-        initWithContentRect:frame
-        styleMask:NSWindowStyleMaskTitled|
-                  NSWindowStyleMaskClosable|
-                  NSWindowStyleMaskMiniaturizable|
-                  NSWindowStyleMaskResizable
-        backing:NSBackingStoreBuffered
-        defer:NO];
-    
-    // Create a parent view. Webview uses this to avoid the unknown
-    // subview traceback message. Add the subview to the window's content view.
-    NSView *parentView = [[NSView alloc] initWithFrame:frame];
-    [parentView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-    [window.contentView addSubview:parentView];
+    @autoreleasepool {
+        atomic_fetch_add(&documentGeneration, 1);
+        atomic_store(&pendingMessageGeneration, 0);
+        windowNoFocus = no_focus;
+        windowStartHidden = start_hidden;
+        NSRect frame = NSMakeRect(x, y, w, h);
+        TurfWindow* window = [[TurfWindow alloc]
+            initWithContentRect:frame
+            styleMask:NSWindowStyleMaskTitled|
+                      NSWindowStyleMaskClosable|
+                      NSWindowStyleMaskMiniaturizable|
+                      NSWindowStyleMaskResizable
+            backing:NSBackingStoreBuffered
+            defer:NO];
+        window.releasedWhenClosed = NO;
+        turfWindow = window;
 
-    // Create and configure WebView
-    WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
-    
-    // Enable developer extras directly in configuration
-    config.preferences.javaScriptCanOpenWindowsAutomatically = YES;
-    [config.preferences setValue:@YES forKey:@"developerExtrasEnabled"];
+        // Create a parent view. Webview uses this to avoid the unknown
+        // subview traceback message. Add the subview to the window's content view.
+        NSView *parentView = [[NSView alloc] initWithFrame:frame];
+        [parentView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        [window.contentView addSubview:parentView];
+
+        // Create and configure WebView
+        WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+
+        // Enable developer extras directly in configuration
+        config.preferences.javaScriptCanOpenWindowsAutomatically = YES;
+        [config.preferences setValue:@YES forKey:@"developerExtrasEnabled"];
 
 
-    //
-    // Inject a script that will be executed when the page is loaded.
-    // This script will be used to send messages to the webview.
-    //
-    NSString *scriptSource = [NSString stringWithUTF8String:jsInject];
-    //
-    // The script will be executed when the page is loaded.
-    WKUserScript *script = [[WKUserScript alloc] 
-        initWithSource:scriptSource 
-        injectionTime:WKUserScriptInjectionTimeAtDocumentEnd 
-        forMainFrameOnly:YES];
+        //
+        // Inject a script that will be executed when the page is loaded.
+        // This script will be used to send messages to the webview.
+        //
+        NSString *scriptSource = [NSString stringWithUTF8String:jsInject];
+        //
+        // The script will be executed when the page is loaded.
+        WKUserScript *script = [[WKUserScript alloc]
+            initWithSource:scriptSource
+            injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+            forMainFrameOnly:YES];
 
-    WKUserContentController *userContentController = 
-                                      [[WKUserContentController alloc] init];
-    [userContentController addUserScript:script];
+        WKUserContentController *userContentController =
+                                          [[WKUserContentController alloc] init];
+        [userContentController addUserScript:script];
 
-    // 
-    // Allow JavaScript code can send messages to the webview by calling
-    // window.webkit.messageHandlers.__turf__.postMessage(message);
-    //
-    [userContentController 
-        addScriptMessageHandler:webViewDelegate name:@"__turf__"];
+        //
+        // Allow JavaScript code can send messages to the webview by calling
+        // window.webkit.messageHandlers.__turf__.postMessage(message);
+        //
+        [userContentController
+            addScriptMessageHandler:webViewDelegate name:@"__turf__"];
 
-    config.userContentController = userContentController;
-    
-    // init the webview with the configuration
-    webView = [[TurfWebView alloc] 
-                      initWithFrame:parentView.bounds configuration:config];
-    
-    // Initialize zoom level
-    ((TurfWebView *)webView).currentZoomLevel = 1.0;
-    
-    // Set the UI delegate to handle key events
-    webView.UIDelegate = webViewDelegate;
-    
-    // Set the navigation delegate to handle page loads
-    webView.navigationDelegate = webViewDelegate;
-    
-    // Enable zoom
-    [webView setAllowsMagnification:YES];
-    [webView setMagnification:1.0];
-    
-    // Enable mouse wheel zooming with Command key
-    NSScrollView *scrollView = [webView enclosingScrollView];
-    [scrollView setAllowsMagnification:YES];
-    [scrollView setMagnification:1.0];
-    
-    // Enable layer backing for the WebView
-    [webView setWantsLayer:YES];
-    webView.layer.contentsScale = window.backingScaleFactor;
-    
-    // Set autoresizing mask to fill parent view
-    [webView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+        config.userContentController = userContentController;
 
-    // Fix display layer issue and enable inspector
-    // [webView fixDisplayLayerAndEnableInspector];
+        // init the webview with the configuration
+        webView = [[TurfWebView alloc]
+                          initWithFrame:parentView.bounds configuration:config];
 
-    [parentView addSubview:webView];
-    
-    // Make sure the WebView has focus
-    [window makeFirstResponder:webView];
+        // Initialize zoom level
+        ((TurfWebView *)webView).currentZoomLevel = 1.0;
 
-    // Load a default URL
-    NSURL *url = [NSURL URLWithString:@"about:blank"];
-    NSURLRequest *request = [NSURLRequest requestWithURL:url];
-    [webView loadRequest:request];
-    
-    // Set webView as the window's content view
-    [window setContentView:parentView];
-    [window setTitle:[NSString stringWithUTF8String:title]];
-    [window setDelegate:windowDelegate];
-    [window center];
+        // Set the UI delegate to handle key events
+        webView.UIDelegate = webViewDelegate;
+
+        // Set the navigation delegate to handle page loads
+        webView.navigationDelegate = webViewDelegate;
+
+        // Enable zoom
+        [webView setAllowsMagnification:YES];
+        [webView setMagnification:1.0];
+
+        // Enable mouse wheel zooming with Command key
+        NSScrollView *scrollView = [webView enclosingScrollView];
+        [scrollView setAllowsMagnification:YES];
+        [scrollView setMagnification:1.0];
+
+        // Enable layer backing for the WebView
+        [webView setWantsLayer:YES];
+        webView.layer.contentsScale = window.backingScaleFactor;
+
+        // Set autoresizing mask to fill parent view
+        [webView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
+
+        // Fix display layer issue and enable inspector
+        // [webView fixDisplayLayerAndEnableInspector];
+
+        [parentView addSubview:webView];
+
+        // Make sure the WebView has focus
+        [window makeFirstResponder:webView];
+
+        // Load a default URL
+        NSURL *url = [NSURL URLWithString:@"about:blank"];
+        NSURLRequest *request = [NSURLRequest requestWithURL:url];
+        [webView loadRequest:request];
+
+        // Set webView as the window's content view
+        [window setContentView:parentView];
+        [window setTitle:[NSString stringWithUTF8String:title]];
+        [window setDelegate:windowDelegate];
+        [window center];
+    }
 }
 
 void NSSetWindowPosition(int x, int y) {
-    CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
-    [webView.window setFrameOrigin:NSMakePoint(x, desktopTop - y - webView.window.frame.size.height)];
+    @autoreleasepool {
+        CGFloat desktopTop = NSMaxY(NSScreen.screens.firstObject.frame);
+        [webView.window setFrameOrigin:NSMakePoint(x, desktopTop - y - webView.window.frame.size.height)];
+    }
 }
 
 void NSShowWindow(void) {
-    if (!webView.window || webView.window.visible) return;
-    if (windowNoFocus || TurfAutomationIsBackground()) {
-        // Show above other windows without taking keyboard focus. Ordering behind
-        // them can make WebKit report hidden and suspend animation frames.
-        [webView.window orderFrontRegardless];
-    } else {
-        [webView.window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+    @autoreleasepool {
+        if (!webView.window || webView.window.visible) return;
+        if (windowNoFocus || TurfAutomationIsBackground()) {
+            // Show above other windows without taking keyboard focus. Ordering behind
+            // them can make WebKit report hidden and suspend animation frames.
+            [webView.window orderFrontRegardless];
+        } else {
+            [webView.window makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        }
     }
 }
 
 void NSRunApplication(void) {
-    if (!windowStartHidden) NSShowWindow();
-    [NSApp run];
+    @autoreleasepool {
+        if (!windowStartHidden) NSShowWindow();
+        turfRunActive = YES;
+        [NSApp run];
+        turfRunActive = NO;
+    }
+}
+
+void NSDestroyWindow(void) {
+    @autoreleasepool {
+        atomic_fetch_add(&documentGeneration, 1);
+        TurfAutomationStop();
+        [webView stopLoading];
+        [webView.configuration.userContentController removeScriptMessageHandlerForName:@"__turf__"];
+        webView.navigationDelegate = nil;
+        webView.UIDelegate = nil;
+        NSWindow *window = turfWindow;
+        window.delegate = nil;
+        [window close];
+        window.contentView = nil;
+        webView = nil;
+        turfWindow = nil;
+    }
 }
 
 void NSEvaluateJavaScript(const char* script) {
-    if (webView != nil) {
+    @autoreleasepool {
+        // Copy before a possible dispatch and keep all WebKit access on the main
+        // thread. Teardown may clear webView before queued work runs.
         NSString *jsString = [NSString stringWithUTF8String:script];
-        [webView evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
-            if (error) {
-                NSLog(@"Error evaluating JavaScript: %@", error);
+        if (!jsString) return;
+        WKWebView *target = webView;
+        void (^evaluate)(void) = ^{
+            // A late delivery from the old pump must not enter a replacement window.
+            if (webView != target) return;
+            [target evaluateJavaScript:jsString completionHandler:^(id result, NSError *error) {
+                if (error) NSLog(@"Error evaluating JavaScript: %@", error);
+            }];
+        };
+        if ([NSThread isMainThread]) evaluate();
+        else dispatch_async(dispatch_get_main_queue(), evaluate);
+    }
+}
+
+// Only one batch may be waiting on the main queue/WebKit at a time. The native
+// queue supplies backpressure while a handler is slow, even on a hidden page.
+void NSDeliverMessages(const char *script, unsigned long long generation) {
+    @autoreleasepool {
+        if (generation != atomic_load(&documentGeneration)) return;
+        unsigned long long empty = 0;
+        if (!atomic_compare_exchange_strong(&pendingMessageGeneration, &empty, generation)) return;
+        NSString *source = [NSString stringWithUTF8String:script];
+        WKWebView *target = webView;
+        void (^finished)(void) = ^{
+            unsigned long long expected = generation;
+            atomic_compare_exchange_strong(&pendingMessageGeneration, &expected, 0);
+        };
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!source || target != webView || generation != atomic_load(&documentGeneration)) {
+                finished(); return;
             }
-        }];
+            [target evaluateJavaScript:source completionHandler:^(id value, NSError *error) { finished(); }];
+        });
     }
 }
 
 void NSShowOpenFileDialog(void) {
-    NSLog(@"Showing open file dialog");
-    if (isShowingFileDialog) {
-        NSLog(@"File dialog already showing");
-        return;
+    @autoreleasepool {
+        NSLog(@"Showing open file dialog");
+        if (isShowingFileDialog) {
+            NSLog(@"File dialog already showing");
+            return;
+        }
+
+        if (openPanel == nil || webView == nil) {
+            NSLog(@"Panel or webView is nil");
+            return;
+        }
+
+        NSWindow *window = [webView window];
+        if (window == nil) {
+            NSLog(@"Window is nil");
+            return;
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            isShowingFileDialog = YES;
+            [openPanel beginSheetModalForWindow:window completionHandler:^(NSModalResponse result) {
+                isShowingFileDialog = NO;
+                if (result == NSModalResponseOK) {
+                    NSURL *selectedFile = openPanel.URLs.firstObject;
+                    NSString *path = selectedFile.path;
+                    NSLog(@"Selected file: %@", path);
+
+                    // Create a JSON message with the file path
+                    NSString *jsonMsg =
+                    [NSString stringWithFormat:
+                    @"{\"type\":\"native_file_selected\",\"path\":\"%@\"}", path];
+                    onJavaScriptMessage([jsonMsg UTF8String]);
+                }
+            }];
+        });
     }
-    
-    if (openPanel == nil || webView == nil) {
-        NSLog(@"Panel or webView is nil");
-        return;
-    }
-    
-    NSWindow *window = [webView window];
-    if (window == nil) {
-        NSLog(@"Window is nil");
-        return;
-    }
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        isShowingFileDialog = YES;
-        [openPanel beginSheetModalForWindow:window completionHandler:^(NSModalResponse result) {
-            isShowingFileDialog = NO;
-            if (result == NSModalResponseOK) {
-                NSURL *selectedFile = openPanel.URLs.firstObject;
-                NSString *path = selectedFile.path;
-                NSLog(@"Selected file: %@", path);
-                
-                // Create a JSON message with the file path
-                NSString *jsonMsg = 
-                [NSString stringWithFormat:
-                @"{\"type\":\"native_file_selected\",\"path\":\"%@\"}", path];
-                onJavaScriptMessage([jsonMsg UTF8String]);
-            }
-        }];
-    });
 }
 
 int NSStartAutomation(const char *path, bool background) {
-    return TurfAutomationStart(webView, path, background);
+    @autoreleasepool {
+        return TurfAutomationStart(webView, path, background);
+    }
 }
 void NSStopAutomation(void) {
-    TurfAutomationStop();
+    @autoreleasepool {
+        TurfAutomationStop();
+    }
 }

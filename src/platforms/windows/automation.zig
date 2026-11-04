@@ -30,15 +30,27 @@ pub const Server = struct {
     background: bool,
     stopped: bool = false,
     navigation: ?*Request = null,
+    diagnostic_enabled: bool = false,
+    diagnostic_starting: bool = false,
+    diagnostic_session: ?[32]u8 = null,
+    diagnostic_script: ?[:0]u16 = null,
+    diagnostic_sequence: u64 = 0,
+    diagnostic_bytes: usize = 0,
+    diagnostics: std.ArrayList([]u8) = .empty,
     fn ref(self: *Server) void {
         self.refs += 1;
     }
     fn unref(self: *Server) void {
         self.refs -= 1;
-        if (self.refs == 0) allocator.destroy(self);
+        if (self.refs == 0) {
+            for (self.diagnostics.items) |entry| allocator.free(entry);
+            self.diagnostics.deinit(allocator);
+            allocator.destroy(self);
+        }
     }
     pub fn stop(self: *Server) void {
         if (self.stopped) return;
+        diagnosticsStop(self);
         self.stopped = true;
         if (active == self) active = null;
         if (self.pipe) |pipe| turf_pipe_stop(pipe);
@@ -77,6 +89,7 @@ const Request = struct {
     id: Value = .null,
     params: Value = .null,
     done: bool = false,
+    diagnostic_source: []const u8 = "",
     key: []const u8 = "",
     key_code: u32 = 0,
     modifiers: u32 = 0,
@@ -113,12 +126,18 @@ const Request = struct {
     fn result(self: *Request, value: anytype) void {
         self.send(.{ .jsonrpc = "2.0", .id = self.id, .result = value }, false);
     }
+    fn failData(self: *Request, code: i32, message: []const u8, data: anytype) void {
+        self.send(.{ .jsonrpc = "2.0", .id = self.id, .@"error" = .{ .code = code, .message = message, .data = data } }, false);
+    }
     fn fail(self: *Request, code: i32, message: []const u8) void {
         self.send(.{ .jsonrpc = "2.0", .id = self.id, .@"error" = .{ .code = code, .message = message } }, false);
     }
 };
 fn field(value: Value, name: []const u8) Value {
     return if (value == .object) value.object.get(name) orelse .null else .null;
+}
+fn has(value: Value, name: []const u8) bool {
+    return value == .object and value.object.contains(name);
 }
 fn string(value: Value) ?[]const u8 {
     return if (value == .string and std.mem.indexOfScalar(u8, value.string, 0) == null) value.string else null;
@@ -176,7 +195,7 @@ fn dispatch(context: *anyopaque, native: *PipeRequest, data: [*]const u8, length
         r.fail(-32602, "params must be an object");
         return;
     }
-    const timeout = std.json.Stringify.valueAlloc(r.alloc(), .{ .jsonrpc = "2.0", .id = id, .@"error" = .{ .code = @as(i32, -32001), .message = "Request timed out; execution may still finish" } }, .{}) catch return;
+    const timeout = std.json.Stringify.valueAlloc(r.alloc(), .{ .jsonrpc = "2.0", .id = id, .@"error" = .{ .code = @as(i32, -32001), .message = "Request timed out; execution may still finish", .data = .{ .kind = "timeout", .mayStillRun = true } } }, .{}) catch return;
     turf_pipe_timeout_response(native, timeout.ptr, timeout.len);
     execute(r, method) catch {
         r.fail(-32002, "Automation operation failed");
@@ -197,7 +216,7 @@ fn execute(r: *Request, method: []const u8) !void {
         return;
     }
     if (std.mem.eql(u8, method, "info")) {
-        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .window = try geometry.info(r.alloc(), view.hwnd.?), .methods = [_][]const u8{ "info", "evaluate", "navigate", "screenshot", "resize", "screens", "move", "show", "click", "key", "typeText", "close" }, .capabilities = .{ .windowPosition = true, .deferredShow = true, .windowCoordinates = "win32", .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
+        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .window = try geometry.info(r.alloc(), view.hwnd.?), .methods = [_][]const u8{ "info", "evaluate", "diagnostics", "navigate", "screenshot", "resize", "screens", "move", "show", "click", "key", "typeText", "close" }, .capabilities = .{ .structuredErrors = true, .diagnostics = true, .windowPosition = true, .deferredShow = true, .windowCoordinates = "win32", .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
     } else if (std.mem.eql(u8, method, "screens")) {
         r.result(.{ .screens = try geometry.screens(r.alloc()) });
     } else if (std.mem.eql(u8, method, "show")) {
@@ -223,13 +242,15 @@ fn execute(r: *Request, method: []const u8) !void {
             return;
         };
         r.result(try geometry.info(r.alloc(), view.hwnd.?));
+    } else if (std.mem.eql(u8, method, "diagnostics")) {
+        try diagnosticsRequest(r);
     } else if (std.mem.eql(u8, method, "evaluate")) {
         const expression = string(field(r.params, "expression")) orelse {
             r.fail(-32602, "expression must be a string");
             return;
         };
         const quoted = try std.json.Stringify.valueAlloc(r.alloc(), expression, .{});
-        const script = try std.fmt.allocPrint(r.alloc(), "(async()=>{{const value=await (0,eval)({s});return JSON.parse(JSON.stringify({{type:value===null?'null':typeof value,value}}));}})()", .{quoted});
+        const script = try std.fmt.allocPrint(r.alloc(), "(async()=>{{const expression={s};\n{s}\n}})()", .{ quoted, @embedFile("../../automation/evaluate.js") });
         try call(r, "Runtime.evaluate", .{ .expression = script, .awaitPromise = true, .returnByValue = true }, .evaluate);
     } else if (std.mem.eql(u8, method, "screenshot")) {
         try call(r, "Page.captureScreenshot", .{ .format = "png", .captureBeyondViewport = false }, .screenshot);
@@ -362,7 +383,7 @@ fn keyCode(key: []const u8) ?u32 {
     }
     return null;
 }
-const Action = enum(u32) { evaluate, screenshot, dispatched, mouse_down, key_down };
+const Action = enum(u32) { diagnostic_installed, diagnostic_started, evaluate, screenshot, dispatched, mouse_down, key_down };
 fn mouse(r: *Request, kind: []const u8, action: Action) !void {
     try call(r, "Input.dispatchMouseEvent", .{ .type = kind, .x = r.x, .y = r.y, .button = "left", .clickCount = 1, .modifiers = r.modifiers }, action);
 }
@@ -377,6 +398,7 @@ const Callback = extern struct {
     refs: u32 = 1,
     request: *Request,
     action: Action,
+    registered_web: ?*wv.ICoreWebView2 = null,
     const VTable = extern struct {
         query: *const fn (*Callback, *const win.GUID, *?*anyopaque) callconv(WINAPI) i32,
         add: *const fn (*Callback) callconv(WINAPI) u32,
@@ -387,7 +409,7 @@ const Callback = extern struct {
     fn query(self: *Callback, iid: *const win.GUID, out: *?*anyopaque) callconv(WINAPI) i32 {
         // IUnknown and ICoreWebView2CallDevToolsProtocolMethodCompletedHandler.
         const unknown = win.GUID{ .Data1 = 0, .Data2 = 0, .Data3 = 0, .Data4 = .{ 0xc0, 0, 0, 0, 0, 0, 0, 0x46 } };
-        const handler = win.GUID.parse("{5c4889f0-5ef6-4c5a-952c-d8f1b92d0574}");
+        const handler = if (self.action == .diagnostic_installed) win.GUID.parse("{b99369f3-9b11-47b5-bc6f-8e7895fcea17}") else win.GUID.parse("{5c4889f0-5ef6-4c5a-952c-d8f1b92d0574}");
         if (std.mem.eql(u8, std.mem.asBytes(iid), std.mem.asBytes(&unknown)) or std.mem.eql(u8, std.mem.asBytes(iid), std.mem.asBytes(&handler))) {
             out.* = self;
             _ = add(self);
@@ -404,6 +426,7 @@ const Callback = extern struct {
         self.refs -= 1;
         const count = self.refs;
         if (count == 0) {
+            if (self.registered_web) |web| _ = web.vtable.Release(web);
             self.request.unref();
             allocator.destroy(self);
         }
@@ -411,12 +434,41 @@ const Callback = extern struct {
     }
     fn invoke(self: *Callback, hr: i32, json: ?[*:0]const u16) callconv(WINAPI) i32 {
         const r = self.request;
-        if (!r.pending()) return 0;
+        if (!r.pending()) {
+            if (self.action == .diagnostic_installed) {
+                if (hr >= 0 and json != null) if (self.registered_web) |web| {
+                    _ = web.vtable.RemoveScriptToExecuteOnDocumentCreated(web, json.?);
+                };
+                r.server.diagnostic_starting = false;
+                r.server.diagnostic_enabled = false;
+            } else if (self.action == .diagnostic_started and !r.server.stopped) diagnosticsStop(r.server);
+            return 0;
+        }
+        if (self.action == .diagnostic_installed) {
+            if (hr < 0 or json == null) {
+                diagnosticsStop(r.server);
+                r.fail(-32002, "Cannot install diagnostics script");
+                return 0;
+            }
+            r.server.diagnostic_script = allocator.dupeSentinel(u16, std.mem.span(json.?), 0) catch {
+                if (self.registered_web) |web| _ = web.vtable.RemoveScriptToExecuteOnDocumentCreated(web, json.?);
+                diagnosticsStop(r.server);
+                r.fail(-32002, "Out of memory");
+                return 0;
+            };
+            call(r, "Runtime.evaluate", .{ .expression = r.diagnostic_source, .returnByValue = true }, .diagnostic_started) catch {
+                diagnosticsStop(r.server);
+                r.fail(-32002, "Cannot attach diagnostics");
+            };
+            return 0;
+        }
         if (hr < 0 or json == null) {
-            r.fail(-32002, "WebView2 operation failed");
+            if (self.action == .diagnostic_started) diagnosticsStop(r.server);
+            r.failData(-32002, "WebView2 operation failed", .{ .kind = "native_error", .context = "main", .nativeCode = hr });
             return 0;
         }
         completed(r, self.action, std.mem.span(json.?)) catch {
+            if (self.action == .diagnostic_started) diagnosticsStop(r.server);
             r.fail(-32002, "Invalid WebView2 result");
         };
         return 0;
@@ -431,7 +483,10 @@ fn call(r: *Request, method: []const u8, params: anytype, action: Action) !void 
     r.ref();
     callback.* = .{ .request = r, .action = action };
     const hr = view.vtable.CallDevToolsProtocolMethod(view, name, wide, callback);
-    if (hr < 0) r.fail(-32002, "WebView2 rejected the operation");
+    if (hr < 0) {
+        if (action == .diagnostic_started) diagnosticsStop(r.server);
+        r.failData(-32002, "WebView2 rejected the operation", .{ .kind = "native_error", .context = "main", .nativeCode = hr });
+    }
     _ = Callback.release(callback);
 }
 fn completed(r: *Request, action: Action, wide: []const u16) !void {
@@ -439,14 +494,43 @@ fn completed(r: *Request, action: Action, wide: []const u16) !void {
     const parsed = try std.json.parseFromSlice(Value, r.alloc(), json, .{ .allocate = .alloc_always });
     const root = parsed.value;
     if (field(root, "error") != .null or field(root, "exceptionDetails") != .null) {
-        r.fail(-32002, "JavaScript or WebView2 operation failed");
+        if (action == .diagnostic_started) diagnosticsStop(r.server);
+        r.failData(-32002, "JavaScript or WebView2 operation failed", .{ .kind = "native_error", .context = "main" });
         return;
     }
     switch (action) {
+        .diagnostic_installed => unreachable,
+        .diagnostic_started => {
+            r.server.diagnostic_starting = false;
+            const session = r.server.diagnostic_session.?;
+            r.result(.{ .enabled = true, .session = &session });
+        },
         .evaluate => {
             const result = field(root, "result");
             const value = field(result, "value");
-            if (value == .null) r.fail(-32002, "JavaScript result is not serializable") else r.result(value);
+            const encoded = string(value) orelse {
+                r.failData(-32003, "JavaScript result is not serializable", .{ .kind = "serialization_error", .context = "main" });
+                return;
+            };
+            const envelope = std.json.parseFromSlice(Value, r.alloc(), encoded, .{}) catch {
+                r.failData(-32003, "JavaScript result is not serializable", .{ .kind = "serialization_error", .context = "main" });
+                return;
+            };
+            const ok = field(envelope.value, "ok");
+            if (ok != .bool) {
+                r.failData(-32003, "JavaScript result is not serializable", .{ .kind = "serialization_error", .context = "main" });
+                return;
+            }
+            const payload = field(envelope.value, if (ok.bool) "result" else "error");
+            if (payload != .object) {
+                r.failData(-32003, "JavaScript result is not serializable", .{ .kind = "serialization_error", .context = "main" });
+                return;
+            }
+            if (ok.bool) r.result(field(envelope.value, "result")) else {
+                const detail = field(envelope.value, "error");
+                const kind = string(field(detail, "kind")) orelse "javascript_exception";
+                r.failData(if (std.mem.eql(u8, kind, "serialization_error")) -32003 else -32002, string(field(detail, "message")) orelse "JavaScript evaluation failed", detail);
+            }
         },
         .screenshot => {
             const data = string(field(root, "data")) orelse return error.InvalidScreenshot;
@@ -473,4 +557,151 @@ pub fn navigationCompleted(view: *wv.WebView, success: bool) void {
 pub fn windowClosing(view: *wv.WebView) void {
     const s = active orelse return;
     if (s.window.webview == view) s.window.stopAutomation();
+}
+
+fn diagnosticsStop(s: *Server) void {
+    s.diagnostic_enabled = false;
+    s.diagnostic_starting = false;
+    if (s.window.webview) |view| if (view.webview) |web| {
+        if (s.diagnostic_script) |id| {
+            _ = web.vtable.RemoveScriptToExecuteOnDocumentCreated(web, id);
+            allocator.free(id);
+            s.diagnostic_script = null;
+        }
+        if (s.diagnostic_session) |session| {
+            var buffer: [128]u8 = undefined;
+            const cleanup = std.fmt.bufPrint(&buffer, "window['__turfDiagnostics{s}']?.stop()", .{session}) catch unreachable;
+            const wide = std.unicode.utf8ToUtf16LeAllocZ(allocator, cleanup) catch return;
+            defer allocator.free(wide);
+            _ = web.vtable.ExecuteScript(web, wide, null);
+        }
+    };
+}
+fn diagnosticsRequest(r: *Request) !void {
+    const s = r.server;
+    const action = if (!has(r.params, "action")) "read" else string(field(r.params, "action")) orelse "invalid";
+    if (s.diagnostic_starting) {
+        r.fail(-32000, "Diagnostics installation is pending");
+        return;
+    }
+    if (std.mem.eql(u8, action, "start")) {
+        if (!s.diagnostic_enabled) {
+            for (s.diagnostics.items) |entry| allocator.free(entry);
+            s.diagnostics.clearRetainingCapacity();
+            s.diagnostic_bytes = 0;
+            s.diagnostic_sequence = 0;
+            var guid: win.GUID = undefined;
+            if (CoCreateGuid(&guid) < 0) return error.GuidFailed;
+            s.diagnostic_session = std.fmt.bytesToHex(std.mem.asBytes(&guid), .lower);
+            const source = try std.fmt.allocPrint(r.alloc(), "(()=>{{const HANDLER_NAME='turfDiagnostics{s}',STATE_KEY='__turfDiagnostics{s}';\n{s}\n}})()", .{ s.diagnostic_session.?, s.diagnostic_session.?, @embedFile("../../automation/diagnostics.js") });
+            r.diagnostic_source = source;
+            const wide = try std.unicode.utf8ToUtf16LeAllocZ(r.alloc(), source);
+            const callback = try allocator.create(Callback);
+            r.ref();
+            callback.* = .{ .request = r, .action = .diagnostic_installed };
+            s.diagnostic_starting = true;
+            s.diagnostic_enabled = true;
+            const web = s.window.webview.?.webview.?;
+            _ = web.vtable.AddRef(web);
+            callback.registered_web = web;
+            const hr = web.vtable.AddScriptToExecuteOnDocumentCreated(web, wide, callback);
+            if (hr < 0) {
+                s.diagnostic_starting = false;
+                diagnosticsStop(s);
+                r.fail(-32002, "Cannot install diagnostics script");
+            }
+            _ = Callback.release(callback);
+            return;
+        }
+    } else if (std.mem.eql(u8, action, "stop")) diagnosticsStop(s) else if (!std.mem.eql(u8, action, "read")) {
+        r.fail(-32602, "action must be start, read, or stop");
+        return;
+    }
+    const session: ?[]const u8 = if (s.diagnostic_session) |*id| id else null;
+    if (!std.mem.eql(u8, action, "read")) {
+        r.result(.{ .enabled = s.diagnostic_enabled, .session = session });
+        return;
+    }
+    if (has(r.params, "session")) {
+        const supplied = string(field(r.params, "session")) orelse "";
+        if (session == null or !std.mem.eql(u8, supplied, session.?)) {
+            r.fail(-32004, "Diagnostic session changed; read again without the old cursor");
+            return;
+        }
+    }
+    const after = if (!has(r.params, "after")) 0 else number(field(r.params, "after")) orelse -1;
+    const limit = if (!has(r.params, "limit")) 64 else number(field(r.params, "limit")) orelse -1;
+    if (after < 0 or after > @as(f64, @floatFromInt(s.diagnostic_sequence)) or @floor(after) != after or limit < 1 or limit > 256 or @floor(limit) != limit) {
+        r.fail(-32602, "after must be an existing nonnegative cursor; limit must be 1 through 256");
+        return;
+    }
+    var entries: std.ArrayList(Value) = .empty;
+    var available: u64 = 0;
+    var cursor = s.diagnostic_sequence;
+    for (s.diagnostics.items) |json| {
+        const entry = (try std.json.parseFromSlice(Value, r.alloc(), json, .{})).value;
+        const sequence: u64 = @intFromFloat(number(field(entry, "sequence")).?);
+        if (@as(f64, @floatFromInt(sequence)) > after) {
+            available += 1;
+            if (@as(f64, @floatFromInt(entries.items.len)) < limit) {
+                try entries.append(r.alloc(), entry);
+                cursor = sequence;
+            }
+        }
+    }
+    r.result(.{ .enabled = s.diagnostic_enabled, .session = session, .entries = entries.items, .nextCursor = cursor, .latestCursor = s.diagnostic_sequence, .droppedSinceCursor = s.diagnostic_sequence - @as(u64, @intFromFloat(after)) - available, .capacity = 256, .maxBytes = 1024 * 1024, .bufferBytes = s.diagnostic_bytes });
+}
+extern "ole32" fn CoCreateGuid(*win.GUID) callconv(WINAPI) i32;
+const FileTime = extern struct { low: u32, high: u32 };
+extern "kernel32" fn GetSystemTimeAsFileTime(*FileTime) callconv(WINAPI) void;
+fn receivedMilliseconds() f64 {
+    var time: FileTime = undefined;
+    GetSystemTimeAsFileTime(&time);
+    return @as(f64, @floatFromInt((@as(u64, time.high) << 32) | time.low)) / 10000.0 - 11644473600000.0;
+}
+// Called before the embedding application's message callback. Diagnostic batches
+// remain private to this endpoint; arbitrary application messages still pass through.
+pub fn diagnosticMessage(message: []const u8) bool {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const parsed = std.json.parseFromSlice(Value, a, message, .{}) catch return false;
+    const marker = string(field(parsed.value, "turfDiagnostics")) orelse return false;
+    if (!std.mem.startsWith(u8, marker, "__turfDiagnostics")) return false;
+    const s = active orelse return true;
+    const session = s.diagnostic_session orelse return true;
+    if (!s.diagnostic_enabled or !std.mem.eql(u8, marker["__turfDiagnostics".len..], &session)) return true;
+    diagnosticBatch(s, a, field(parsed.value, "body")) catch {};
+    return true;
+}
+fn diagnosticBatch(s: *Server, a: std.mem.Allocator, body: Value) !void {
+    const document = string(field(body, "documentId")) orelse return;
+    const entries = field(body, "entries");
+    if (document.len > 128 or entries != .array or entries.array.items.len > 64) return;
+    const lost = number(field(body, "dropped")) orelse 0;
+    if (lost > 0) s.diagnostic_sequence += @intFromFloat(@min(lost, 1000000));
+    for (entries.array.items) |item| {
+        if (item != .object) continue;
+        var entry = item;
+        s.diagnostic_sequence += 1;
+        try entry.object.put(a, "sequence", .{ .integer = @intCast(s.diagnostic_sequence) });
+        try entry.object.put(a, "documentId", .{ .string = document });
+        const url = string(field(body, "url")) orelse "";
+        try entry.object.put(a, "url", .{ .string = url });
+        try entry.object.put(a, "isMainFrame", field(body, "isMainFrame"));
+        try entry.object.put(a, "receivedAt", .{ .float = receivedMilliseconds() });
+        const encoded = try std.json.Stringify.valueAlloc(a, entry, .{});
+        if (encoded.len > 8192) continue;
+        const owned = try allocator.dupe(u8, encoded);
+        s.diagnostics.append(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
+        s.diagnostic_bytes += owned.len;
+        while (s.diagnostics.items.len > 256 or s.diagnostic_bytes > 1024 * 1024) {
+            const old = s.diagnostics.orderedRemove(0);
+            s.diagnostic_bytes -= old.len;
+            allocator.free(old);
+        }
+    }
 }

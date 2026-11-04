@@ -166,7 +166,7 @@ def main():
 
 Evaluation awaits promises and returns {type,value}; do not JSON.stringify objects.
 On failure, the CLI exits nonzero and writes the RPC error JSON to stderr.
-macOS diagnostics are opt-in. Start before navigation to capture startup/frame logs.
+Diagnostics are opt-in. Start before navigation to capture startup/frame logs.
 Read results include session, nextCursor, latestCursor, droppedSinceCursor, and entries.
 Pass session and after=nextCursor on subsequent reads; reading does not clear logs.
 A timeout does not cancel JavaScript. Do not automatically retry mutating commands.

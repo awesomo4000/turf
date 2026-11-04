@@ -2,6 +2,7 @@
 // Copyright (c) 2026 awesomo4000
 #define _GNU_SOURCE
 #include "automation.h"
+#include "../../automation/scripts.h"
 #include <X11/XKBlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -41,6 +42,13 @@ struct Server {
     dev_t device;
     Request *navigation;
     gulong load_handler, fail_handler;
+    WebKitUserScript *diagnostic_script;
+    gboolean diagnostic_starting;
+    gulong diagnostic_signal;
+    char *diagnostic_session, *diagnostic_handler, *diagnostic_state;
+    GQueue diagnostics;
+    guint64 diagnostic_sequence;
+    gsize diagnostic_bytes;
 };
 struct Client {
     int refs;
@@ -77,6 +85,10 @@ static void server_unref(Server *s) {
     g_clear_object(&s->window);
     g_object_unref(s->json);
     g_free(s->path);
+    g_free(s->diagnostic_session);
+    g_free(s->diagnostic_handler);
+    g_free(s->diagnostic_state);
+    g_queue_clear_full(&s->diagnostics, g_free);
     g_free(s);
 }
 static Client *client_ref(Client *c) {
@@ -223,6 +235,8 @@ static void reply(Request *r, JSCValue *value, int code, const char *message) {
         JSCValue *error = object(s);
         number(error, "code", code);
         string(error, "message", message);
+        if (value)
+            put(error, "data", g_object_ref(value));
         put(response, "error", error);
     } else
         put(response, "result", value ? g_object_ref(value) : jsc_value_new_null(s->json));
@@ -248,7 +262,11 @@ static gboolean request_timeout(gpointer data) {
         r->client->server->navigation = NULL;
         request_unref(r); // navigation ownership; timeout still owns r
     }
-    reply(r, NULL, -32001, "Request timed out; execution may still finish");
+    JSCValue *detail = object(r->client->server);
+    string(detail, "kind", "timeout");
+    boolean(detail, "mayStillRun", TRUE);
+    reply(r, detail, -32001, "Request timed out; execution may still finish");
+    g_object_unref(detail);
     return G_SOURCE_REMOVE;
 }
 static JSCValue *viewport(Server *s) {
@@ -267,16 +285,50 @@ static void evaluated(GObject *source, GAsyncResult *result, gpointer data) {
     JSCValue *v = webkit_web_view_call_async_javascript_function_finish(WEBKIT_WEB_VIEW(source),
                                                                         result, &error);
     if (!r->done) {
-        if (error)
-            reply(r, NULL, -32002, error->message);
-        else {
+        Server *s = r->client->server;
+        if (error) {
+            JSCValue *detail = object(s);
+            string(detail, "kind", "native_error");
+            string(detail, "context", "main");
+            string(detail, "nativeDomain", g_quark_to_string(error->domain));
+            number(detail, "nativeCode", error->code);
+            reply(r, detail, -32002, error->message);
+            g_object_unref(detail);
+        } else {
             char *json = v && jsc_value_is_string(v) ? jsc_value_to_string(v) : NULL;
-            JSCValue *value = json ? jsc_value_new_from_json(r->client->server->json, json) : NULL;
-            if (value)
-                reply(r, value, 0, NULL);
-            else
-                reply(r, NULL, -32003, "JavaScript result cannot be serialized");
-            g_clear_object(&value);
+            JSCValue *envelope = json ? jsc_value_new_from_json(s->json, json) : NULL;
+            JSCValue *ok = envelope && jsc_value_is_object(envelope)
+                               ? jsc_value_object_get_property(envelope, "ok")
+                               : NULL;
+            if (ok && jsc_value_is_boolean(ok)) {
+                JSCValue *value = jsc_value_object_get_property(
+                    envelope, jsc_value_to_boolean(ok) ? "result" : "error");
+                if (!jsc_value_is_object(value) || jsc_value_is_null(value) ||
+                    jsc_value_is_array(value)) {
+                    JSCValue *detail = object(s);
+                    string(detail, "kind", "serialization_error");
+                    string(detail, "context", "main");
+                    reply(r, detail, -32003, "JavaScript result cannot be serialized");
+                    g_object_unref(detail);
+                } else if (jsc_value_to_boolean(ok))
+                    reply(r, value, 0, NULL);
+                else {
+                    char *kind = get_string(value, "kind"), *message = get_string(value, "message");
+                    reply(r, value, g_strcmp0(kind, "serialization_error") == 0 ? -32003 : -32002,
+                          message ? message : "JavaScript evaluation failed");
+                    g_free(kind);
+                    g_free(message);
+                }
+                g_object_unref(value);
+            } else {
+                JSCValue *detail = object(s);
+                string(detail, "kind", "serialization_error");
+                string(detail, "context", "main");
+                reply(r, detail, -32003, "JavaScript result cannot be serialized");
+                g_object_unref(detail);
+            }
+            g_clear_object(&ok);
+            g_clear_object(&envelope);
             g_free(json);
         }
     }
@@ -936,6 +988,206 @@ done:
     g_free(anchor);
 }
 
+static void diagnostics_stop(Server *s) {
+    if (!s->diagnostic_script)
+        return;
+    WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(s->view);
+    char *cleanup = g_strdup_printf("window['%s']?.stop()", s->diagnostic_state);
+    webkit_web_view_evaluate_javascript(s->view, cleanup, -1, NULL, NULL, NULL, NULL, NULL);
+    g_free(cleanup);
+    webkit_user_content_manager_remove_script(manager, s->diagnostic_script);
+    webkit_user_script_unref(s->diagnostic_script);
+    s->diagnostic_script = NULL;
+    s->diagnostic_starting = FALSE;
+    webkit_user_content_manager_unregister_script_message_handler(manager, s->diagnostic_handler,
+                                                                  NULL);
+    g_signal_handler_disconnect(manager, s->diagnostic_signal);
+}
+static void diagnostic_message(WebKitUserContentManager *manager, JSCValue *body, gpointer data) {
+    (void)manager;
+    Server *s = data;
+    if (!s->diagnostic_script || s->stopped)
+        return;
+    char *document = get_string(body, "documentId");
+    JSCValue *entries = jsc_value_object_get_property(body, "entries");
+    double count = 0, lost = 0;
+    if (!document || strlen(document) > 128 || !jsc_value_is_array(entries) ||
+        !get_number(entries, "length", &count) || count > 64)
+        goto done;
+    if (get_number(body, "dropped", &lost) && lost > 0)
+        s->diagnostic_sequence += (guint64)MIN(lost, 1000000);
+    char *url = get_string(body, "url");
+    JSCValue *main = jsc_value_object_get_property(body, "isMainFrame");
+    for (guint i = 0; i < count; i++) {
+        JSCValue *entry = jsc_value_object_get_property_at_index(entries, i);
+        if (!jsc_value_is_object(entry)) {
+            g_object_unref(entry);
+            continue;
+        }
+        number(entry, "sequence", ++s->diagnostic_sequence);
+        string(entry, "documentId", document);
+        string(entry, "url", url);
+        boolean(entry, "isMainFrame", jsc_value_to_boolean(main));
+        number(entry, "receivedAt", g_get_real_time() / 1000.0);
+        char *encoded = jsc_value_to_json(entry, 0);
+        g_object_unref(entry);
+        if (!encoded || strlen(encoded) > 8192) {
+            g_free(encoded);
+            continue;
+        }
+        s->diagnostic_bytes += strlen(encoded);
+        g_queue_push_tail(&s->diagnostics, encoded);
+        while (s->diagnostics.length > 256 || s->diagnostic_bytes > 1024 * 1024) {
+            char *old = g_queue_pop_head(&s->diagnostics);
+            s->diagnostic_bytes -= strlen(old);
+            g_free(old);
+        }
+    }
+    g_free(url);
+    g_object_unref(main);
+done:
+    g_free(document);
+    g_object_unref(entries);
+}
+static void diagnostics_started(GObject *source, GAsyncResult *result, gpointer data) {
+    Request *r = data;
+    GError *error = NULL;
+    JSCValue *v =
+        webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source), result, &error);
+    Server *s = r->client->server;
+    s->diagnostic_starting = FALSE;
+    if (error || r->done) {
+        if (!s->stopped)
+            diagnostics_stop(s);
+        reply(r, NULL, -32002, error ? error->message : "Diagnostics installation cancelled");
+    } else {
+        JSCValue *o = object(s);
+        boolean(o, "enabled", TRUE);
+        string(o, "session", s->diagnostic_session);
+        reply(r, o, 0, NULL);
+        g_object_unref(o);
+    }
+    g_clear_error(&error);
+    g_clear_object(&v);
+    request_unref(r);
+}
+static void diagnostics_request(Request *r, JSCValue *params) {
+    Server *s = r->client->server;
+    if (s->diagnostic_starting) {
+        reply(r, NULL, -32000, "Diagnostics installation is pending");
+        return;
+    }
+    char *action = get_string(params, "action");
+    if (!action && jsc_value_object_has_property(params, "action")) {
+        reply(r, NULL, -32602, "action must be start, read, or stop");
+        return;
+    }
+    if (!action)
+        action = g_strdup("read");
+    if (!strcmp(action, "start")) {
+        if (!s->diagnostic_script) {
+            g_queue_clear_full(&s->diagnostics, g_free);
+            s->diagnostic_bytes = 0;
+            s->diagnostic_sequence = 0;
+            g_free(s->diagnostic_session);
+            g_free(s->diagnostic_handler);
+            g_free(s->diagnostic_state);
+            s->diagnostic_session = g_uuid_string_random();
+            s->diagnostic_handler = g_strconcat("turfDiagnostics", s->diagnostic_session, NULL);
+            s->diagnostic_state = g_strconcat("__turfDiagnostics", s->diagnostic_session, NULL);
+            WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(s->view);
+            char *signal = g_strconcat("script-message-received::", s->diagnostic_handler, NULL);
+            s->diagnostic_signal =
+                g_signal_connect(manager, signal, G_CALLBACK(diagnostic_message), s);
+            g_free(signal);
+            if (!webkit_user_content_manager_register_script_message_handler(
+                    manager, s->diagnostic_handler, NULL)) {
+                g_signal_handler_disconnect(manager, s->diagnostic_signal);
+                reply(r, NULL, -32002, "Cannot register diagnostics handler");
+                g_free(action);
+                return;
+            }
+            char *source = g_strdup_printf("const HANDLER_NAME='%s', STATE_KEY='%s';\n%s",
+                                           s->diagnostic_handler, s->diagnostic_state,
+                                           turf_diagnostics_script);
+            // Wrap declarations so repeated installation does not redeclare page
+            // globals.
+            char *wrapped = g_strconcat("(()=>{", source, "})()", NULL);
+            g_free(source);
+            s->diagnostic_script =
+                webkit_user_script_new(wrapped, WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+                                       WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+            webkit_user_content_manager_add_script(manager, s->diagnostic_script);
+            s->diagnostic_starting = TRUE;
+            webkit_web_view_evaluate_javascript(s->view, wrapped, -1, NULL, NULL, r->client->cancel,
+                                                diagnostics_started, request_ref(r));
+            g_free(wrapped);
+            g_free(action);
+            return;
+        }
+    } else if (!strcmp(action, "stop"))
+        diagnostics_stop(s);
+    else if (strcmp(action, "read")) {
+        reply(r, NULL, -32602, "action must be start, read, or stop");
+        g_free(action);
+        return;
+    }
+    JSCValue *o = object(s);
+    boolean(o, "enabled", s->diagnostic_script != NULL);
+    put(o, "session",
+        s->diagnostic_session ? jsc_value_new_string(s->json, s->diagnostic_session)
+                              : jsc_value_new_null(s->json));
+    if (!strcmp(action, "read")) {
+        char *session = get_string(params, "session");
+        if (jsc_value_object_has_property(params, "session") &&
+            (!session || g_strcmp0(session, s->diagnostic_session))) {
+            reply(r, NULL, -32004, "Diagnostic session changed; read again without the old cursor");
+            g_free(session);
+            goto done;
+        }
+        g_free(session);
+        double after = 0, limit = 64;
+        if ((jsc_value_object_has_property(params, "after") &&
+             !get_number(params, "after", &after)) ||
+            (jsc_value_object_has_property(params, "limit") &&
+             !get_number(params, "limit", &limit)) ||
+            after < 0 || after > s->diagnostic_sequence || floor(after) != after || limit < 1 ||
+            limit > 256 || floor(limit) != limit) {
+            reply(r, NULL, -32602,
+                  "after must be an existing nonnegative cursor; limit must be 1 "
+                  "through 256");
+            goto done;
+        }
+        JSCValue *entries = jsc_value_new_from_json(s->json, "[]");
+        guint n = 0;
+        guint64 available = 0, cursor = s->diagnostic_sequence;
+        for (GList *item = s->diagnostics.head; item; item = item->next) {
+            JSCValue *entry = jsc_value_new_from_json(s->json, item->data);
+            double sequence = 0;
+            get_number(entry, "sequence", &sequence);
+            if (sequence > after) {
+                available++;
+                if (n < limit) {
+                    jsc_value_object_set_property_at_index(entries, n++, entry);
+                    cursor = sequence;
+                }
+            }
+            g_object_unref(entry);
+        }
+        put(o, "entries", entries);
+        number(o, "nextCursor", cursor);
+        number(o, "latestCursor", s->diagnostic_sequence);
+        number(o, "droppedSinceCursor", s->diagnostic_sequence - (guint64)after - available);
+        number(o, "capacity", 256);
+        number(o, "maxBytes", 1024 * 1024);
+        number(o, "bufferBytes", s->diagnostic_bytes);
+    }
+    reply(r, o, 0, NULL);
+done:
+    g_object_unref(o);
+    g_free(action);
+}
+
 static void execute(Request *r, const char *method, JSCValue *params) {
     Server *s = r->client->server;
     if (!gtk_widget_get_visible(GTK_WIDGET(s->window)) &&
@@ -955,15 +1207,17 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         put(o, "viewport", viewport(s));
         put(o, "window", window_info(s));
         put(o, "methods",
-            jsc_value_new_from_json(
-                s->json,
-                "[\"info\",\"evaluate\",\"navigate\",\"screenshot\",\"resize\","
-                "\"screens\",\"move\",\"show\",\"click\",\"key\",\"typeText\",\"close\"]"));
+            jsc_value_new_from_json(s->json,
+                                    "[\"info\",\"evaluate\",\"navigate\",\"screenshot\",\"resize\","
+                                    "\"diagnostics\",\"screens\",\"move\",\"show\",\"click\","
+                                    "\"key\",\"typeText\",\"close\"]"));
         JSCValue *caps = object(s);
         boolean(caps, "windowPosition", position_supported(s->window));
         boolean(caps, "deferredShow", TRUE);
         string(caps, "windowCoordinates", "gdk-logical");
         boolean(caps, "awaitPromises", TRUE);
+        boolean(caps, "structuredErrors", TRUE);
+        boolean(caps, "diagnostics", TRUE);
         string(caps, "nativeInput", xtest_available(s) ? "x11-xtest" : "unsupported");
         boolean(caps, "keyRepeat", FALSE);
         boolean(caps, "backgroundNativeInput", FALSE);
@@ -985,6 +1239,8 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         JSCValue *o = window_info(s);
         reply(r, o, 0, NULL);
         g_object_unref(o);
+    } else if (!strcmp(method, "diagnostics")) {
+        diagnostics_request(r, params);
     } else if (!strcmp(method, "evaluate")) {
         char *expression = get_string(params, "expression");
         if (!expression) {
@@ -995,11 +1251,9 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         g_variant_builder_init(&args, G_VARIANT_TYPE_VARDICT);
         g_variant_builder_add(&args, "{sv}", "expression", g_variant_new_string(expression));
         GVariant *arguments = g_variant_ref_sink(g_variant_builder_end(&args));
-        webkit_web_view_call_async_javascript_function(
-            s->view,
-            "const value = await (0, eval)(expression); return JSON.stringify({type: value === "
-            "null ? 'null' : typeof value, value});",
-            -1, arguments, NULL, NULL, r->client->cancel, evaluated, request_ref(r));
+        webkit_web_view_call_async_javascript_function(s->view, turf_evaluate_script, -1, arguments,
+                                                       NULL, NULL, r->client->cancel, evaluated,
+                                                       request_ref(r));
         g_variant_unref(arguments);
         g_free(expression);
     } else if (!strcmp(method, "navigate")) {
@@ -1269,6 +1523,7 @@ void turf_linux_automation_stop(void) {
     Server *s = server;
     if (!s)
         return;
+    diagnostics_stop(s);
     server = NULL;
     s->stopped = TRUE;
     g_socket_service_stop(s->service);

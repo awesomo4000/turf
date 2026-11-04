@@ -17,7 +17,7 @@ Work in order; macOS first. Windows/Linux ports follow verified contracts.
 - [ ] Allow independent macOS connections to progress without an idle connection monopolizing the server.
 - [ ] Define explicit frame targeting and navigation identity; distinguish same-origin helpers from cross-origin automation.
 - [ ] Design an optional gateway around explicitly supplied session endpoints, ownership, and operation grouping. No automatic global discovery requirement.
-- [ ] Validate Windows/Linux error and diagnostic parity after the macOS contract settles.
+- [x] Port structured errors and diagnostics to Windows/Linux; run the shared contract and native regressions.
 
 Keep PTY input, terminal grids, pane layouts, persistent overlays, animation seek
 hooks, and per-pane policy in the companion application. Preserve promise-aware
@@ -25,3 +25,42 @@ evaluation and explicit socket selection. A timeout does not imply cancellation.
 
 Local GUI tests take their display choice from TURF_TEST_SCREEN, not committed
 machine names. Use the selected display's lower-third center and preserve focus.
+
+## Coverage
+
+- [x] Measure macOS Objective-C bridge line/function/branch coverage with the existing integration suites and generate HTML/JSON reports.
+- [x] Add macOS embedder tests for direct URL/file loading, JavaScript evaluation, position, and explicit automation-stop APIs.
+- [x] Add Zig queue/message edge-case tests with exhaustive allocation-failure checks, escaped names, and separate allocators; fix ownership and delivery cleanup.
+- [x] Exercise macOS embedder-owned windows through graceful shutdown and queue teardown, with native message traffic; stop and join the message pump.
+- [x] Test macOS public loadFile with spaces, #, %, ?, and Unicode in disposable paths; use the native file-URL loader.
+- [ ] Port file-path and built-in message validation fixes/tests to Windows/Linux.
+- [x] Test macOS built-in native echo/custom handlers with escaped payloads and get_random with invalid bounds.
+- [ ] Exercise navigation failure callbacks and controlled native-dialog behavior.
+- [x] Validate macOS Zig line coverage with known hit/miss paths and run the integration suites under kcov.
+- [ ] Measure injected-JavaScript coverage separately; do not treat native percentages as whole-project coverage.
+
+## Fuzzing
+
+- [x] Add a bounded coverage-guided Zig queue/message round-trip target, also run as seed-corpus tests under `zig build test`.
+- [x] Add seeded macOS automation wire mutations with response assertions, fragmentation, 1 MiB boundaries, recovery checks, and replay artifacts.
+- [ ] Port the parser mutation runner and lifecycle fixture to Windows/Linux.
+- [ ] Fuzz chunked-transfer offsets, interrupted transfers, and lifecycle operation sequences.
+- [ ] Add a standalone native request-parser target for coverage-guided fuzzing without starting WebKit.
+
+## Embedder failure modes (macOS first)
+
+- [x] Repeated create/run/close/deinit in one process: stale callbacks, native windows, threads, descriptors, and Zig allocations.
+- [x] Shutdown with evaluation, navigation, diagnostics, and a large response pending.
+- [x] Queue overload with slow/hidden consumers: measure retention and define bounds/backpressure.
+- [x] Navigation during native message delivery: define and test document ownership.
+- [x] Client disconnect during partial requests/responses or pending work; verify recovery.
+- [x] Main-thread API contract and concurrent queue producers with supported allocators.
+- [x] Input validation: unusual local paths, reversed random bounds, and escaped built-in handler payloads.
+
+
+The failure-mode checks above use deterministic regression scenarios, not arbitrary
+lifecycle fuzzing. Native windows/descriptors and checked Zig allocations are
+measured; WebKit helper-thread counts allow warm-up variation. Windows/Linux
+runtime validation of these new behaviors remains pending. Concurrent macOS
+windows, idle-client multiplexing, native dialogs, and an externally owned Cocoa
+event loop are outside this pass.

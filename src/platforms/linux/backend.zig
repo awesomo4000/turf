@@ -185,7 +185,7 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
         std.debug.print("Error popping messages: {}\n", .{err});
         return 1; // Keep timer running even on error
     };
-    defer messages.deinit(window.allocator);
+    defer common.freeMessages(window.message_queue.allocator, &messages);
 
     if (messages.items.len == 0) return 1; // Keep timer running
 
@@ -205,7 +205,7 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     for (messages.items, 0..) |msg, i| {
         if (i > 0) writer.writeAll(",") catch return 1;
         // Send the data as a JavaScript object, not a string
-        writer.print("{{type:'{s}',data:{s}}}", .{ msg.type, msg.data }) catch return 1;
+        writer.print("{f}", .{msg}) catch return 1;
         std.log.debug("Sending message to JS: type={s}, data={s}", .{ msg.type, msg.data });
     }
     writer.writeAll(");") catch return 1;
@@ -215,12 +215,6 @@ fn processMessageQueue(window: *PlatformWindow) c.gboolean {
     // Execute JavaScript
     if (window.webview) |webview| {
         c.webkit_web_view_evaluate_javascript(@ptrCast(webview), js_code, -1, null, null, null, null, null);
-    }
-
-    // Free the messages
-    for (messages.items) |msg| {
-        window.allocator.free(msg.type);
-        window.allocator.free(msg.data);
     }
 
     return 1; // Keep timer running

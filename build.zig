@@ -10,6 +10,9 @@ pub fn build(b: *std.Build) void {
     const target_os = target.result.os.tag;
     const macos_sdk = b.option([]const u8, "macos-sdk", "Path to a macOS SDK for cross-compilation");
 
+    const coverage_objects = b.option([]const u8, "macos-coverage-objects", "Directory of the Apple Clang coverage bridge (tools/coverage-macos.py)");
+    if (coverage_objects != null and target_os != .macos) @panic("macOS coverage objects require a macOS target");
+
     // Create turf library
     const libturf = b.createModule(.{
         .root_source_file = b.path("src/turf.zig"),
@@ -73,6 +76,8 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
+    if (coverage_objects != null) exe.rdynamic = true;
+
     // Platform-specific executable configuration
     switch (target_os) {
         .macos => {
@@ -80,14 +85,7 @@ pub fn build(b: *std.Build) void {
             exe.root_module.linkFramework("Cocoa", .{});
             exe.root_module.linkFramework("WebKit", .{});
             exe.root_module.linkFramework("CoreGraphics", .{});
-            exe.root_module.addCSourceFile(.{
-                .file = b.path("src/platforms/macos/cocoa_bridge.m"),
-                .flags = &[_][]const u8{"-fobjc-arc"},
-            });
-            exe.root_module.addCSourceFile(.{
-                .file = b.path("src/platforms/macos/automation.m"),
-                .flags = &[_][]const u8{"-fobjc-arc"},
-            });
+            addMacOSBridge(b, exe.root_module, coverage_objects);
             exe.root_module.link_libc = true;
         },
         .linux => {
@@ -156,6 +154,7 @@ pub fn build(b: *std.Build) void {
     });
 
     demo_mod.addImport("turf", libturf);
+    if (coverage_objects != null) demo.rdynamic = true;
 
     switch (target_os) {
         .macos => {
@@ -163,14 +162,7 @@ pub fn build(b: *std.Build) void {
             demo.root_module.linkFramework("Cocoa", .{});
             demo.root_module.linkFramework("WebKit", .{});
             demo.root_module.linkFramework("CoreGraphics", .{});
-            demo.root_module.addCSourceFile(.{
-                .file = b.path("src/platforms/macos/cocoa_bridge.m"),
-                .flags = &[_][]const u8{"-fobjc-arc"},
-            });
-            demo.root_module.addCSourceFile(.{
-                .file = b.path("src/platforms/macos/automation.m"),
-                .flags = &[_][]const u8{"-fobjc-arc"},
-            });
+            addMacOSBridge(b, demo.root_module, coverage_objects);
             demo.root_module.link_libc = true;
         },
         .linux => {
@@ -216,6 +208,24 @@ pub fn build(b: *std.Build) void {
         "Run the demo",
     );
     run_demo_step.dependOn(&run_demo_cmd.step);
+
+    // A real consumer of the public API, separate from the Turf CLI.
+    if (target_os == .macos) {
+        const embedder_mod = b.createModule(.{
+            .root_source_file = b.path("tests/fixtures/embedder/lifecycle.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        embedder_mod.addImport("turf", libturf);
+        const embedder = b.addExecutable(.{ .name = "embedder-lifecycle", .root_module = embedder_mod });
+        addMacOSSDK(b, embedder_mod, macos_sdk);
+        for ([_][]const u8{ "Cocoa", "WebKit", "CoreGraphics" }) |framework| embedder_mod.linkFramework(framework, .{});
+        addMacOSBridge(b, embedder_mod, null);
+        embedder_mod.addCSourceFile(.{ .file = b.path("tests/fixtures/embedder/control.m"), .flags = &.{"-fobjc-arc"} });
+        embedder_mod.link_libc = true;
+        const install_embedder = b.addInstallArtifact(embedder, .{});
+        b.step("test-embedder-build", "Build the macOS embedder lifecycle fixture").dependOn(&install_embedder.step);
+    }
 
     // Test configuration
     const lib_unit_tests = b.addTest(.{
@@ -272,6 +282,15 @@ pub fn build(b: *std.Build) void {
     }
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
+    // Isolated shared-code fuzzing needs no native frameworks or GUI session.
+    const fuzz_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/common.zig"),
+        .target = target,
+        .optimize = optimize,
+    }) });
+    const run_fuzz = b.addRunArtifact(fuzz_tests);
+    b.step("fuzz", "Fuzz queue/message properties; use --fuzz=10000 for a bounded run").dependOn(&run_fuzz.step);
+
     const tests_step = b.step("test", "Run unit tests");
     tests_step.dependOn(&run_lib_unit_tests.step);
     tests_step.dependOn(&run_exe_unit_tests.step);
@@ -322,5 +341,19 @@ fn addMacOSSDK(b: *std.Build, module: *std.Build.Module, sdk_path: ?[]const u8) 
         module.addSystemFrameworkPath(b.graph.cwdRelativePath(b.pathJoin(&.{ sdk, "System/Library/Frameworks" })));
         module.addSystemIncludePath(b.graph.cwdRelativePath(b.pathJoin(&.{ sdk, "usr/include" })));
         module.addLibraryPath(b.graph.cwdRelativePath(b.pathJoin(&.{ sdk, "usr/lib" })));
+    }
+}
+
+// The coverage bridge is linked by Apple Clang with its matching profiling runtime.
+// Ordinary builds continue to compile the bridge with Zig's bundled Clang.
+fn addMacOSBridge(b: *std.Build, module: *std.Build.Module, coverage_objects: ?[]const u8) void {
+    if (coverage_objects) |directory| {
+        module.addLibraryPath(b.graph.cwdRelativePath(directory));
+        module.addRPath(b.graph.cwdRelativePath(directory));
+        module.linkSystemLibrary("turf_coverage_bridge", .{});
+    } else {
+        for ([_][]const u8{ "cocoa_bridge.m", "automation.m" }) |name| {
+            module.addCSourceFile(.{ .file = b.path(b.fmt("src/platforms/macos/{s}", .{name})), .flags = &.{"-fobjc-arc"} });
+        }
     }
 }
