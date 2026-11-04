@@ -16,7 +16,8 @@ Work in order; macOS first. Windows/Linux ports follow verified contracts.
 - [x] Port regional screenshots to Windows/Linux and run the shared pixel/geometry contract on each backend, including baseline PNG compatibility and scaled Windows desktop captures.
 - [x] Obtain user verification of 2x Retina regional screenshots, including hidden capture, padding, rounding, clamping, and iframe coordinates. Automated native pixel comparisons currently use the selected 1x test display.
 - [ ] Run the automated regional screenshot pixel comparisons on a Retina display.
-- [ ] Investigate the user-reported blank file:// iframe within a file:// page; reproduce and inspect load errors before attributing it to WebKit policy. The same content reportedly renders through srcdoc.
+- [x] Investigate blank macOS file:// iframes: loadFile and automation navigate allow the host directory tree; outside-tree files remain blank, while same-tree and srcdoc content render. Added hidden/visible pixel and execution regressions. Original report paths remain unknown.
+- [ ] Design an explicit macOS file-read-root option and consistent loadURL(file://) handling; the generic URL loader currently has different observed access behavior. Preserve the containing-directory default for loadFile/navigation.
 - [ ] Add bounded chunked upload alongside grab.
 - [ ] Allow independent macOS connections to progress without an idle connection monopolizing the server.
 - [ ] Define explicit frame targeting and navigation identity; distinguish same-origin helpers from cross-origin automation.

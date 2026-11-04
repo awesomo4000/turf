@@ -80,6 +80,43 @@ headers with `python3 tests/linux_abi.py`; this requires `cc` and `pkg-config`.
 ./zig-out/bin/turf path/to/file.html
 ```
 
+### Local files and iframes on macOS
+
+`Window.loadFile(path)` and automation `navigate` to a `file://` URL grant
+WKWebView read access to the host HTML file's containing directory and its
+descendants. An iframe in that tree renders normally. A file in a sibling or
+parent directory can remain `about:blank`, even though the top-level page loads
+successfully. This is independent of screenshot cropping and window visibility.
+
+For example, a host at `/tmp/example/host/index.html` cannot load an iframe from
+`/tmp/example/app/panel.html` through this loading path. Put the host at
+`/tmp/example/index.html` to include both subdirectories in its read scope, or
+serve the application through a local HTTP server. Inline `srcdoc` content also
+works, but does not grant access to external files outside the allowed tree.
+
+Rendering and JavaScript DOM access are separate. In our macOS tests, file
+iframes painted and ran scripts but had opaque origins that blocked the parent
+from reading their DOM. `postMessage` worked. A same-origin local HTTP setup is
+useful when the parent needs direct DOM access.
+
+The embedder API `loadURL("file://...")` currently uses WebKit's generic request
+loader instead of the explicit file loader. Our test observed broader file
+access through that path; it is not a documented read-scope control. Prefer
+`loadFile` for local content. Turf does not yet expose a configurable file-read
+root. JavaScript diagnostics may contain no error for a blocked file iframe,
+because they do not capture all WebKit-internal loading messages.
+
+Run the macOS regression with `TURF_TEST_SCREEN` set to a display-name substring:
+
+```bash
+zig build test-embedder-build
+python3 tests/file_iframes_macos.py
+```
+
+It uses fresh webviews and disposable files under `/tmp`, checks pixels and
+child-script execution for both loading APIs, and tests hidden and visible
+unfocused windows. Visible windows use the selected display's lower-third center.
+
 ### Startup logo API
 
 Set `WindowConfig.startup_logo` when creating a window:
