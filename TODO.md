@@ -12,7 +12,11 @@ Work in order; macOS first. Windows/Linux ports follow verified contracts.
 - [x] Improve evaluation CLI help and document error/cursor contracts.
 - [ ] Add evaluation file/stdin input.
 - [ ] Add bounded condition waits with useful timeout diagnostics and no automatic mutation retries.
-- [ ] Add rectangular screenshots with capture geometry; keep pane selection in the embedding app.
+- [x] Add macOS rect/selector screenshots with padding and capture geometry; keep pane selection in the embedding app.
+- [ ] Port regional screenshots to Windows/Linux and run the pixel/geometry contract on each backend.
+- [x] Obtain user verification of 2x Retina regional screenshots, including hidden capture, padding, rounding, clamping, and iframe coordinates. Automated native pixel comparisons currently use the selected 1x test display.
+- [ ] Run the automated regional screenshot pixel comparisons on a Retina display.
+- [ ] Investigate the user-reported blank file:// iframe within a file:// page; reproduce and inspect load errors before attributing it to WebKit policy. The same content reportedly renders through srcdoc.
 - [ ] Add bounded chunked upload alongside grab.
 - [ ] Allow independent macOS connections to progress without an idle connection monopolizing the server.
 - [ ] Define explicit frame targeting and navigation identity; distinguish same-origin helpers from cross-origin automation.

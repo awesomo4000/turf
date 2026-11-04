@@ -1222,6 +1222,7 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         boolean(caps, "keyRepeat", FALSE);
         boolean(caps, "backgroundNativeInput", FALSE);
         string(caps, "screenshot", "viewport");
+        boolean(caps, "screenshotRegion", FALSE);
         number(caps, "maxRequestBytes", MAX_REQUEST);
         number(caps, "maxResponseBytes", MAX_RESPONSE);
         put(o, "capabilities", caps);
@@ -1274,6 +1275,11 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         g_free(scheme);
         g_free(url);
     } else if (!strcmp(method, "screenshot")) {
+        if (jsc_value_object_has_property(params, "rect") || jsc_value_object_has_property(params, "selector") ||
+            jsc_value_object_has_property(params, "padding")) {
+            reply(r, NULL, -32004, "Region screenshots are not supported by this backend yet");
+            return;
+        }
         webkit_web_view_get_snapshot(s->view, WEBKIT_SNAPSHOT_REGION_VISIBLE,
                                      WEBKIT_SNAPSHOT_OPTIONS_NONE, r->client->cancel, snapshot,
                                      request_ref(r));

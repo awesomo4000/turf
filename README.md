@@ -32,6 +32,10 @@ Lightweight webviews with message passing between native code (Zig) and JavaScri
 
 ### Building
 
+The repository's `mise.toml` pins Zig 0.17.0. With mise installed, run
+`mise install`, then `mise exec -- zig build`. If mise is activated in your
+shell, the commands below use the pinned version automatically.
+
 ```bash
 # Build the project
 zig build
@@ -200,7 +204,7 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | `evaluate` | `expression` string | `{type, value}` after awaiting promises; `undefined` omits `value` |
 | `diagnostics` | `action` start/read/stop; read accepts `session`, `after`, `limit` | Bounded console and page errors with independent cursors |
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
-| `screenshot` | None | Viewport PNG as base64 `data`, plus `format`, pixel `width`, and pixel `height` |
+| `screenshot` | Optional `rect` or `selector`, and `padding` on macOS | PNG as base64 `data`, plus `format`, pixel `width` and `height`; macOS also returns captured `region` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
 | `show` | None | Shows the window using its configured focus policy; returns window information |
 | `screens` | None | `{screens: [...]}` with IDs, names, built-in/primary flags, scale factors, frames, and work areas |
@@ -465,6 +469,63 @@ rectangles, account for the ratio between `info.viewport` dimensions and
 `window.innerWidth` / `window.innerHeight`, and scroll the element into view first.
 Only a single left click is currently supported; drag, right-click, and held-key
 sequences are not implemented.
+
+#### Regional screenshots
+
+On macOS, `info.capabilities.screenshotRegion` is true. Choose either a rectangle
+in viewport points or the first main-frame element matching a CSS selector:
+
+```bash
+python3 tools/turf-client.py "$SOCKET" screenshot '{"rect":{"x":40,"y":30,"width":120,"height":80}}' -o /tmp/panel.png
+python3 tools/turf-client.py "$SOCKET" screenshot '{"selector":"#panel","padding":8}' -o /tmp/panel.png
+```
+
+`rect` uses the same viewport-point coordinates as `click`. Selector measurement
+converts DOM CSS coordinates to viewport points automatically. `padding` must be
+finite and nonnegative and requires `rect` or `selector`. Rectangle dimensions
+must be positive before padding. Turf clips the padded region to the viewport,
+rounds fractional edges outward to whole viewport points, and clips again.
+The returned `region: {x, y, width, height}` describes the actual capture.
+Image `width` and `height` remain pixel dimensions. Map an annotation's viewport
+point to image pixels with `(x - region.x) * width / region.width` and the
+corresponding formula for y.
+
+An invalid rectangle, empty intersection, zero-sized element, or invalid CSS
+selector returns `-32602`. An unmatched selector returns `-32004`, naming the
+selector in both the message and `error.data.selector`. Native capture failures
+return `-32002`. Detected navigation, viewport changes, or selector geometry
+changes during capture return `-32004` with a retry message.
+
+Selector measurement and capture happen in one request, with geometry checked
+again afterward. This does not freeze the page or guarantee an atomic snapshot
+of animation. Settle the scene before capture. Hidden macOS windows can produce
+screenshots, but `requestAnimationFrame` may be suspended while hidden. Capture
+can therefore show a starting or paused state rather than an advanced animation.
+For frame-driven content, use a visible, unfocused window or an application-provided
+way to stage the scene without animation frames. Turf does not scroll the target
+into view. Selectors resolve only in the main frame; select the iframe element
+itself or supply a rectangle in main-frame coordinates for content within it.
+Only the visible viewport is captured.
+
+With no region parameters, the existing PNG encoding and image fields are
+unchanged; macOS adds full-viewport `region` metadata. Linux and Windows currently
+advertise `screenshotRegion: false` and reject region parameters with `-32004`.
+Whole-viewport capture continues to work on both.
+
+Run the macOS pixel comparisons and edge-case tests with a display-name substring
+in `TURF_TEST_SCREEN`:
+
+```bash
+python3 tests/screenshot_regions_macos.py
+```
+
+The test places unfocused windows in the selected display's lower-third center.
+It compares decoded crop pixels with the full image, checks padding, clamping,
+invalid inputs, iframe scope, DOM overrides, CSS zoom, and CLI output.
+Optional `--baseline-binary PATH`
+also compares the no-parameter PNG bytes and existing fields with a pre-feature
+binary using the same static scene. Pixel scaling is checked on the selected
+display; testing a 1x display alone does not verify Retina rendering.
 
 Run the Linux suite in an X11 session with `DISPLAY` and `XAUTHORITY` set:
 

@@ -216,7 +216,7 @@ fn execute(r: *Request, method: []const u8) !void {
         return;
     }
     if (std.mem.eql(u8, method, "info")) {
-        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .window = try geometry.info(r.alloc(), view.hwnd.?), .methods = [_][]const u8{ "info", "evaluate", "diagnostics", "navigate", "screenshot", "resize", "screens", "move", "show", "click", "key", "typeText", "close" }, .capabilities = .{ .structuredErrors = true, .diagnostics = true, .windowPosition = true, .deferredShow = true, .windowCoordinates = "win32", .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
+        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .window = try geometry.info(r.alloc(), view.hwnd.?), .methods = [_][]const u8{ "info", "evaluate", "diagnostics", "navigate", "screenshot", "resize", "screens", "move", "show", "click", "key", "typeText", "close" }, .capabilities = .{ .structuredErrors = true, .diagnostics = true, .windowPosition = true, .deferredShow = true, .windowCoordinates = "win32", .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .screenshotRegion = false, .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
     } else if (std.mem.eql(u8, method, "screens")) {
         r.result(.{ .screens = try geometry.screens(r.alloc()) });
     } else if (std.mem.eql(u8, method, "show")) {
@@ -253,6 +253,10 @@ fn execute(r: *Request, method: []const u8) !void {
         const script = try std.fmt.allocPrint(r.alloc(), "(async()=>{{const expression={s};\n{s}\n}})()", .{ quoted, @embedFile("../../automation/evaluate.js") });
         try call(r, "Runtime.evaluate", .{ .expression = script, .awaitPromise = true, .returnByValue = true }, .evaluate);
     } else if (std.mem.eql(u8, method, "screenshot")) {
+        if (has(r.params, "rect") or has(r.params, "selector") or has(r.params, "padding")) {
+            r.fail(-32004, "Region screenshots are not supported by this backend yet");
+            return;
+        }
         try call(r, "Page.captureScreenshot", .{ .format = "png", .captureBeyondViewport = false }, .screenshot);
     } else if (std.mem.eql(u8, method, "navigate")) {
         const url = string(field(r.params, "url")) orelse {

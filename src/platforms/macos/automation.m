@@ -15,6 +15,8 @@
 
 static const NSUInteger maxRequestBytes = 1024 * 1024;
 static const NSUInteger maxResponseBytes = 32 * 1024 * 1024;
+extern unsigned long long NSMessageGeneration(void);
+
 typedef void (^AutomationReply)(id result, NSInteger code, NSString *message);
 
 @interface TurfAutomationServer : NSObject <WKScriptMessageHandler>
@@ -40,6 +42,8 @@ typedef void (^AutomationReply)(id result, NSInteger code, NSString *message);
 - (void)serve;
 - (void)execute:(NSDictionary *)request reply:(AutomationReply)reply;
 - (void)removeSocket;
+- (void)screenshot:(NSDictionary *)params reply:(AutomationReply)reply;
+- (void)captureRegion:(NSRect)region fullViewport:(BOOL)full generation:(unsigned long long)generation bounds:(NSRect)bounds reply:(AutomationReply)reply;
 @end
 
 static TurfAutomationServer *automationServer;
@@ -88,10 +92,41 @@ static NSData *responseData(id requestID, id result, NSInteger code, NSString *m
     return line;
 }
 
+static NSDictionary *snapshotRegion(NSRect rect) {
+    return @{ @"x": @(rect.origin.x), @"y": @(rect.origin.y),
+        @"width": @(rect.size.width), @"height": @(rect.size.height) };
+}
+
 // Coordinates are webview points from the top-left, independent of screen scale.
 static BOOL automationNumber(id value) {
     return [value isKindOfClass:NSNumber.class] &&
         CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID() && isfinite([value doubleValue]);
+}
+
+static BOOL snapshotRect(id value, NSRect *rect) {
+    if (![value isKindOfClass:NSDictionary.class]) return NO;
+    for (NSString *key in @[@"x", @"y", @"width", @"height"]) {
+        if (!automationNumber(value[key])) return NO;
+    }
+    *rect = NSMakeRect([value[@"x"] doubleValue], [value[@"y"] doubleValue],
+        [value[@"width"] doubleValue], [value[@"height"] doubleValue]);
+    return rect->size.width > 0 && rect->size.height > 0;
+}
+
+static BOOL clipSnapshotRect(NSRect requested, double padding, NSSize viewport, NSRect *result) {
+    double left = requested.origin.x - padding, top = requested.origin.y - padding;
+    double right = requested.origin.x + requested.size.width + padding;
+    double bottom = requested.origin.y + requested.size.height + padding;
+    if (!isfinite(left) || !isfinite(top) || !isfinite(right) || !isfinite(bottom)) return NO;
+    left = MAX(0, left); top = MAX(0, top);
+    right = MIN(viewport.width, right); bottom = MIN(viewport.height, bottom);
+    if (right <= left || bottom <= top) return NO;
+    // WebKit snapshots enclose the source rect in whole view coordinates. Report
+    // that same outward-rounded region so annotation offsets remain meaningful.
+    left = floor(left); top = floor(top);
+    right = MIN(viewport.width, ceil(right)); bottom = MIN(viewport.height, ceil(bottom));
+    *result = NSMakeRect(left, top, right - left, bottom - top);
+    return YES;
 }
 
 static BOOL automationModifiers(id values, NSEventModifierFlags *flags) {
@@ -442,6 +477,117 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     [self removeSocket];
 }
 
+- (void)captureRegion:(NSRect)region fullViewport:(BOOL)full generation:(unsigned long long)generation bounds:(NSRect)bounds reply:(AutomationReply)reply {
+    WKWebView *view = self.view;
+    if (self.stopped || generation != NSMessageGeneration() || !NSEqualRects(view.bounds, bounds)) {
+        reply(nil, -32004, @"Page or viewport changed during screenshot; retry"); return;
+    }
+    WKSnapshotConfiguration *configuration = nil;
+    if (!full) {
+        configuration = [WKSnapshotConfiguration new];
+        NSRect native = region;
+        if (!view.isFlipped) native.origin.y = bounds.size.height - NSMaxY(region);
+        native.origin.x += bounds.origin.x; native.origin.y += bounds.origin.y;
+        configuration.rect = NSRectToCGRect(native);
+    }
+    // Keep the original nil configuration and PNG encoder for a full capture.
+    [view takeSnapshotWithConfiguration:configuration completionHandler:^(NSImage *image, NSError *error) {
+        if (self.stopped || view != self.view || generation != NSMessageGeneration() || !NSEqualRects(view.bounds, bounds)) {
+            reply(nil, -32004, @"Page or viewport changed during screenshot; retry"); return;
+        }
+        if (error || !image) { reply(nil, -32002, error.localizedDescription ?: @"Snapshot failed"); return; }
+        NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:image.TIFFRepresentation];
+        NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        if (!png) reply(nil, -32002, @"PNG encoding failed");
+        else reply(@{ @"format": @"png", @"data": [png base64EncodedStringWithOptions:0],
+            @"width": @(bitmap.pixelsWide), @"height": @(bitmap.pixelsHigh), @"region": snapshotRegion(region) }, 0, nil);
+    }];
+}
+
+- (void)screenshot:(NSDictionary *)params reply:(AutomationReply)reply {
+    BOOL hasRect = params[@"rect"] != nil, hasSelector = params[@"selector"] != nil;
+    id paddingValue = params[@"padding"];
+    if (hasRect && hasSelector) {
+        reply(nil, -32602, @"rect and selector are mutually exclusive; provide only one"); return;
+    }
+    if (paddingValue && !hasRect && !hasSelector) {
+        reply(nil, -32602, @"padding requires rect or selector"); return;
+    }
+    if (paddingValue && (!automationNumber(paddingValue) || [paddingValue doubleValue] < 0)) {
+        reply(nil, -32602, @"padding must be a finite nonnegative number"); return;
+    }
+    double padding = paddingValue ? [paddingValue doubleValue] : 0;
+    NSRect bounds = self.view.bounds;
+    unsigned long long generation = NSMessageGeneration();
+    if (bounds.size.width <= 0 || bounds.size.height <= 0) {
+        reply(nil, -32004, @"Viewport has no visible area"); return;
+    }
+    if (!hasRect && !hasSelector) {
+        [self captureRegion:NSMakeRect(0, 0, bounds.size.width, bounds.size.height)
+            fullViewport:YES generation:generation bounds:bounds reply:reply];
+        return;
+    }
+    if (hasRect) {
+        NSRect requested, region;
+        if (!snapshotRect(params[@"rect"], &requested) || !clipSnapshotRect(requested, padding, bounds.size, &region)) {
+            reply(nil, -32602, @"rect requires finite x/y and positive width/height, with a nonempty viewport intersection after padding"); return;
+        }
+        [self captureRegion:region fullViewport:NO generation:generation bounds:bounds reply:reply];
+        return;
+    }
+    NSString *selector = params[@"selector"];
+    if (![selector isKindOfClass:NSString.class] || selector.length == 0) {
+        reply(nil, -32602, @"selector must be a nonempty CSS selector string"); return;
+    }
+    if (@available(macOS 11.0, *)) {
+        NSString *source = @"let element; try { element = document.querySelector(selector); } catch (_) { return {error:'syntax'}; }"
+            @"if (!element) return {error:'missing'}; const r = element.getBoundingClientRect();"
+            @"return {rect:{x:r.x,y:r.y,width:r.width,height:r.height},viewport:{width:innerWidth,height:innerHeight}};";
+        // Argument passing avoids interpolating selectors into executable script.
+        // The isolated world also avoids page overrides of DOM measurement APIs.
+        [self.view callAsyncJavaScript:source arguments:@{ @"selector": selector } inFrame:nil
+            inContentWorld:[WKContentWorld worldWithName:@"TurfScreenshot"] completionHandler:^(id value, NSError *error) {
+            if (error) { reply(nil, -32002, error.localizedDescription); return; }
+            if (![value isKindOfClass:NSDictionary.class]) { reply(nil, -32002, @"Could not measure screenshot selector"); return; }
+            if ([value[@"error"] isEqual:@"syntax"]) {
+                reply(@{ @"selector": selector }, -32602, [NSString stringWithFormat:@"Invalid CSS selector: %@", selector]); return;
+            }
+            if ([value[@"error"] isEqual:@"missing"]) {
+                reply(@{ @"selector": selector }, -32004, [NSString stringWithFormat:@"No element matches selector: %@", selector]); return;
+            }
+            NSRect measured, region;
+            NSDictionary *viewport = value[@"viewport"];
+            if (!snapshotRect(value[@"rect"], &measured) || ![viewport isKindOfClass:NSDictionary.class] ||
+                !automationNumber(viewport[@"width"]) || !automationNumber(viewport[@"height"]) ||
+                [viewport[@"width"] doubleValue] <= 0 || [viewport[@"height"] doubleValue] <= 0) {
+                reply(nil, -32602, @"Selected element has no positive screenshot area"); return;
+            }
+            // DOM coordinates are CSS viewport units; normally these ratios are 1.
+            double sx = bounds.size.width / [viewport[@"width"] doubleValue];
+            double sy = bounds.size.height / [viewport[@"height"] doubleValue];
+            measured.origin.x *= sx; measured.origin.y *= sy;
+            measured.size.width *= sx; measured.size.height *= sy;
+            if (!clipSnapshotRect(measured, padding, bounds.size, &region)) {
+                reply(nil, -32602, @"Selected element has no viewport intersection after padding"); return;
+            }
+            AutomationReply checkedReply = ^(id image, NSInteger code, NSString *message) {
+                if (code) { reply(image, code, message); return; }
+                // A snapshot crosses the WebKit process boundary. Detect geometry
+                // changes across that interval rather than promising a DOM freeze.
+                [self.view callAsyncJavaScript:source arguments:@{ @"selector": selector } inFrame:nil
+                    inContentWorld:[WKContentWorld worldWithName:@"TurfScreenshot"] completionHandler:^(id after, NSError *checkError) {
+                    if (checkError || self.stopped || generation != NSMessageGeneration() ||
+                        !NSEqualRects(self.view.bounds, bounds) || ![after isEqual:value]) {
+                        reply(@{ @"selector": selector }, -32004,
+                            [NSString stringWithFormat:@"Selector or viewport changed during screenshot; retry: %@", selector]);
+                    } else reply(image, 0, nil);
+                }];
+            };
+            [self captureRegion:region fullViewport:NO generation:generation bounds:bounds reply:checkedReply];
+        }];
+    } else reply(nil, -32000, @"Selector screenshots require macOS 11 or newer");
+}
+
 - (void)execute:(NSDictionary *)request reply:(AutomationReply)reply {
     NSString *method = request[@"method"];
     NSDictionary *params = request[@"params"] ?: @{};
@@ -453,7 +599,7 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
         reply(@{ @"protocolVersion": @1, @"pid": @(getpid()), @"engine": @"WKWebView",
             @"background": @(self.background), @"window": automationWindowInfo(view.window), @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
             @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"diagnostics", @"show", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
-            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"deferredShow": @YES, @"structuredErrors": @YES, @"diagnostics": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport",
+            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"deferredShow": @YES, @"structuredErrors": @YES, @"diagnostics": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport", @"screenshotRegion": @YES,
                 @"maxRequestBytes": @(maxRequestBytes), @"maxResponseBytes": @(maxResponseBytes) },
             @"viewport": @{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) } }, 0, nil);
     } else if ([method isEqual:@"diagnostics"]) {
@@ -543,14 +689,7 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
             }
         });
     } else if ([method isEqual:@"screenshot"]) {
-        [view takeSnapshotWithConfiguration:nil completionHandler:^(NSImage *image, NSError *error) {
-            if (error || !image) { reply(nil, -32002, error.localizedDescription ?: @"Snapshot failed"); return; }
-            NSBitmapImageRep *bitmap = [NSBitmapImageRep imageRepWithData:image.TIFFRepresentation];
-            NSData *png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
-            if (!png) reply(nil, -32002, @"PNG encoding failed");
-            else reply(@{ @"format": @"png", @"data": [png base64EncodedStringWithOptions:0],
-                @"width": @(bitmap.pixelsWide), @"height": @(bitmap.pixelsHigh) }, 0, nil);
-        }];
+        [self screenshot:params reply:reply];
     } else if ([method isEqual:@"resize"]) {
         id width = params[@"width"], height = params[@"height"];
         BOOL valid = [width isKindOfClass:NSNumber.class] && [height isKindOfClass:NSNumber.class];

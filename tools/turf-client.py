@@ -169,6 +169,8 @@ On failure, the CLI exits nonzero and writes the RPC error JSON to stderr.
 Diagnostics are opt-in. Start before navigation to capture startup/frame logs.
 Read results include session, nextCursor, latestCursor, droppedSinceCursor, and entries.
 Pass session and after=nextCursor on subsequent reads; reading does not clear logs.
+On backends with info.capabilities.screenshotRegion, screenshot accepts rect or selector,
+plus optional nonnegative padding. Returned region uses viewport points; image sizes use pixels.
 A timeout does not cancel JavaScript. Do not automatically retry mutating commands.
 """)
     parser.add_argument("socket", help="Unix socket path or local Windows named pipe")
