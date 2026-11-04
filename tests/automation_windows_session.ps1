@@ -8,19 +8,24 @@ param(
     [switch]$Bridge,
     [switch]$Protocol,
     [switch]$Diagnostics,
-    [switch]$Placement
+    [switch]$Placement,
+    [switch]$Regions,
+    [string]$BaselineBinary
 )
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path $Binary).Path
+if ($BaselineBinary) { $BaselineBinary = (Resolve-Path $BaselineBinary).Path }
 $Python = (Get-Command $Python).Source
 $test = Join-Path $PSScriptRoot 'automation_windows.py'
 if ($Protocol) { $test = Join-Path $PSScriptRoot 'automation_windows_protocol.py' }
 if ($Diagnostics) { $test = Join-Path $PSScriptRoot 'automation_diagnostics_portable.py' }
+if ($Regions) { $test = Join-Path $PSScriptRoot 'screenshot_regions_portable.py' }
 if ($Placement) { $test = Join-Path $PSScriptRoot 'window_placement.py' }
 $name = 'TurfSmoke-' + [Guid]::NewGuid().ToString('N')
 $log = Join-Path $env:TEMP ($name + '.log')
 function Quote-PS([string]$value) { return "'" + $value.Replace("'", "''") + "'" }
 $command = '& ' + (Quote-PS $Python) + ' ' + (Quote-PS $test) + ' ' + (Quote-PS $Binary)
+if ($BaselineBinary) { $command += ' --baseline-binary ' + (Quote-PS $BaselineBinary) }
 if ($Bridge) { $command += ' --bridge' }
 $command += ' *> ' + (Quote-PS $log) + '; exit $LASTEXITCODE'
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))

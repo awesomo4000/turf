@@ -53,11 +53,13 @@ pub fn build(b: *std.Build) void {
             lib.root_module.link_libc = true;
         },
         .windows => {
+            lib.root_module.addCSourceFile(.{ .file = b.path("src/platforms/windows/screenshot.c"), .flags = &.{"-std=c11", "-Wall", "-Wextra"} });
             lib.root_module.addCSourceFile(.{
                 .file = b.path("src/platforms/windows/automation_transport.c"),
                 .flags = &.{"-std=c11", "-Wall", "-Wextra"},
             });
             lib.root_module.linkSystemLibrary("advapi32", .{});
+            lib.root_module.linkSystemLibrary("ole32", .{});
             lib.root_module.linkSystemLibrary("user32", .{});
             lib.root_module.link_libc = true;
         },

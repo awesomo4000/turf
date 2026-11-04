@@ -204,7 +204,7 @@ Notifications and batches are not supported. Unknown methods return `-32601`.
 | `evaluate` | `expression` string | `{type, value}` after awaiting promises; `undefined` omits `value` |
 | `diagnostics` | `action` start/read/stop; read accepts `session`, `after`, `limit` | Bounded console and page errors with independent cursors |
 | `navigate` | Absolute `url`, using http, https, file, or about | Final URL after navigation finishes; failure returns an error |
-| `screenshot` | Optional `rect` or `selector`, and `padding` on macOS | PNG as base64 `data`, plus `format`, pixel `width` and `height`; macOS also returns captured `region` |
+| `screenshot` | Optional `rect` or `selector`, and `padding` | PNG as base64 `data`, plus `format`, pixel `width` and `height`, and captured `region` |
 | `resize` | Numeric `width` and `height`, 1–8192 | Webview dimensions in points after resizing the window content |
 | `show` | None | Shows the window using its configured focus policy; returns window information |
 | `screens` | None | `{screens: [...]}` with IDs, names, built-in/primary flags, scale factors, frames, and work areas |
@@ -472,7 +472,7 @@ sequences are not implemented.
 
 #### Regional screenshots
 
-On macOS, `info.capabilities.screenshotRegion` is true. Choose either a rectangle
+On macOS, Linux, and Windows, `info.capabilities.screenshotRegion` is true. Choose either a rectangle
 in viewport points or the first main-frame element matching a CSS selector:
 
 ```bash
@@ -480,7 +480,7 @@ python3 tools/turf-client.py "$SOCKET" screenshot '{"rect":{"x":40,"y":30,"width
 python3 tools/turf-client.py "$SOCKET" screenshot '{"selector":"#panel","padding":8}' -o /tmp/panel.png
 ```
 
-`rect` uses the same viewport-point coordinates as `click`. Selector measurement
+`rect` uses the coordinate units of `info.viewport`. Selector measurement
 converts DOM CSS coordinates to viewport points automatically. `padding` must be
 finite and nonnegative and requires `rect` or `selector`. Rectangle dimensions
 must be positive before padding. Turf clips the padded region to the viewport,
@@ -508,9 +508,15 @@ itself or supply a rectangle in main-frame coordinates for content within it.
 Only the visible viewport is captured.
 
 With no region parameters, the existing PNG encoding and image fields are
-unchanged; macOS adds full-viewport `region` metadata. Linux and Windows currently
-advertise `screenshotRegion: false` and reject region parameters with `-32004`.
-Whole-viewport capture continues to work on both.
+unchanged; all backends add full-viewport `region` metadata. Linux crops the native
+snapshot texture before PNG encoding. Windows crops the original screenshot with
+the OS-provided Windows Imaging Component. Neither requires an external image tool.
+
+At fractional display scales, the full image can have rounded pixel dimensions.
+Each crop edge maps to the nearest pixel using the full image's width/viewport-width
+and height/viewport-height ratios independently. A crop dimension can therefore
+differ by one pixel from rounding its width or height alone. Use the returned
+image dimensions and `region` when placing annotations.
 
 Run the macOS pixel comparisons and edge-case tests with a display-name substring
 in `TURF_TEST_SCREEN`:
@@ -526,6 +532,25 @@ Optional `--baseline-binary PATH`
 also compares the no-parameter PNG bytes and existing fields with a pre-feature
 binary using the same static scene. Pixel scaling is checked on the selected
 display; testing a 1x display alone does not verify Retina rendering.
+
+The same pixel contract runs on Linux under Xvfb and on a Windows desktop:
+
+```bash
+python3 tests/automation_xvfb.py --regions
+GDK_SCALE=2 python3 tests/automation_xvfb.py --regions
+```
+
+```powershell
+python tests\screenshot_regions_portable.py zig-out\bin\turf.exe
+# From SSH, use the existing logged-in desktop session:
+powershell -File tests\automation_windows_session.ps1 -Binary zig-out\bin\turf.exe -Regions
+```
+
+Both runners support baseline comparisons. Pass `--baseline-binary PATH` to the
+Python runner, or `-BaselineBinary PATH` to the PowerShell session runner. Tests
+use unfocused windows and disposable fixtures. The shared contract also checks
+scrolled pages and per-axis pixel scaling.
+
 
 Run the Linux suite in an X11 session with `DISPLAY` and `XAUTHORITY` set:
 

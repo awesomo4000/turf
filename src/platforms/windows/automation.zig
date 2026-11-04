@@ -15,6 +15,8 @@ extern fn turf_pipe_reply(*PipeRequest, [*]const u8, usize, c_int) void;
 extern fn turf_pipe_timeout_response(*PipeRequest, [*]const u8, usize) void;
 extern fn turf_pipe_pending(*PipeRequest) c_int;
 extern fn turf_pipe_release(*PipeRequest) void;
+extern fn turf_crop_png([*]const u8, u32, c_int, c_int, c_int, c_int, *?[*]u8, *u32) i32;
+extern fn turf_free_png(?[*]u8) void;
 extern "ole32" fn CoTaskMemFree(?*anyopaque) callconv(WINAPI) void;
 extern "user32" fn SetForegroundWindow(win.HWND) callconv(WINAPI) win.BOOL;
 extern "user32" fn GetClientRect(win.HWND, *wv.RECT) callconv(WINAPI) win.BOOL;
@@ -90,6 +92,13 @@ const Request = struct {
     params: Value = .null,
     done: bool = false,
     diagnostic_source: []const u8 = "",
+    screenshot_context: i64 = 0,
+    screenshot_width: i32 = 0,
+    screenshot_height: i32 = 0,
+    screenshot_measurement: []const u8 = "",
+    screenshot_geometry: Value = .null,
+    screenshot_data: []const u8 = "",
+    screenshot_script: []const u8 = "",
     key: []const u8 = "",
     key_code: u32 = 0,
     modifiers: u32 = 0,
@@ -216,7 +225,7 @@ fn execute(r: *Request, method: []const u8) !void {
         return;
     }
     if (std.mem.eql(u8, method, "info")) {
-        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .window = try geometry.info(r.alloc(), view.hwnd.?), .methods = [_][]const u8{ "info", "evaluate", "diagnostics", "navigate", "screenshot", "resize", "screens", "move", "show", "click", "key", "typeText", "close" }, .capabilities = .{ .structuredErrors = true, .diagnostics = true, .windowPosition = true, .deferredShow = true, .windowCoordinates = "win32", .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .screenshotRegion = false, .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
+        r.result(.{ .protocolVersion = 1, .pid = GetCurrentProcessId(), .engine = "WebView2", .background = s.background, .title = property(r, web, true), .url = property(r, web, false), .loading = !view.is_page_ready, .viewport = dimensions(view), .window = try geometry.info(r.alloc(), view.hwnd.?), .methods = [_][]const u8{ "info", "evaluate", "diagnostics", "navigate", "screenshot", "resize", "screens", "move", "show", "click", "key", "typeText", "close" }, .capabilities = .{ .structuredErrors = true, .diagnostics = true, .windowPosition = true, .deferredShow = true, .windowCoordinates = "win32", .awaitPromises = true, .nativeInput = "webview2-devtools", .backgroundNativeInput = true, .keyRepeat = true, .screenshot = "viewport", .screenshotRegion = true, .maxRequestBytes = 1024 * 1024, .maxResponseBytes = 32 * 1024 * 1024 } });
     } else if (std.mem.eql(u8, method, "screens")) {
         r.result(.{ .screens = try geometry.screens(r.alloc()) });
     } else if (std.mem.eql(u8, method, "show")) {
@@ -253,11 +262,13 @@ fn execute(r: *Request, method: []const u8) !void {
         const script = try std.fmt.allocPrint(r.alloc(), "(async()=>{{const expression={s};\n{s}\n}})()", .{ quoted, @embedFile("../../automation/evaluate.js") });
         try call(r, "Runtime.evaluate", .{ .expression = script, .awaitPromise = true, .returnByValue = true }, .evaluate);
     } else if (std.mem.eql(u8, method, "screenshot")) {
-        if (has(r.params, "rect") or has(r.params, "selector") or has(r.params, "padding")) {
-            r.fail(-32004, "Region screenshots are not supported by this backend yet");
-            return;
-        }
-        try call(r, "Page.captureScreenshot", .{ .format = "png", .captureBeyondViewport = false }, .screenshot);
+        const size = dimensions(view);
+        r.screenshot_width = size.width;
+        r.screenshot_height = size.height;
+        const options = try std.json.Stringify.valueAlloc(r.alloc(), r.params, .{});
+        const quoted = try std.json.Stringify.valueAlloc(r.alloc(), options, .{});
+        r.screenshot_script = try std.fmt.allocPrint(r.alloc(), "(()=>{{const options={s},viewportWidth={d},viewportHeight={d};\n{s}\n}})()", .{ quoted, size.width, size.height, @embedFile("../../automation/screenshot.js") });
+        try call(r, "Page.getFrameTree", .{}, .screenshot_frame);
     } else if (std.mem.eql(u8, method, "navigate")) {
         const url = string(field(r.params, "url")) orelse {
             r.fail(-32602, "url must be a string");
@@ -387,7 +398,7 @@ fn keyCode(key: []const u8) ?u32 {
     }
     return null;
 }
-const Action = enum(u32) { diagnostic_installed, diagnostic_started, evaluate, screenshot, dispatched, mouse_down, key_down };
+const Action = enum(u32) { diagnostic_installed, diagnostic_started, evaluate, screenshot_frame, screenshot_world, screenshot_measure, screenshot_check, screenshot, dispatched, mouse_down, key_down };
 fn mouse(r: *Request, kind: []const u8, action: Action) !void {
     try call(r, "Input.dispatchMouseEvent", .{ .type = kind, .x = r.x, .y = r.y, .button = "left", .clickCount = 1, .modifiers = r.modifiers }, action);
 }
@@ -493,11 +504,61 @@ fn call(r: *Request, method: []const u8, params: anytype, action: Action) !void 
     }
     _ = Callback.release(callback);
 }
+fn screenshotViewportValid(r: *Request) bool {
+    const size = dimensions(r.server.window.webview.?);
+    if (size.width == r.screenshot_width and size.height == r.screenshot_height) return true;
+    r.fail(-32004, "Viewport changed during screenshot; retry");
+    return false;
+}
+fn measureScreenshot(r: *Request, action: Action) !void {
+    try call(r, "Runtime.evaluate", .{ .expression = r.screenshot_script, .contextId = r.screenshot_context, .returnByValue = true }, action);
+}
+fn screenshotResult(r: *Request) !void {
+    var data = r.screenshot_data;
+    if (data.len < 44) return error.InvalidScreenshot;
+    var header: [33]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&header, data[0..44]);
+    var width = std.mem.readInt(u32, header[16..20], .big);
+    var height = std.mem.readInt(u32, header[20..24], .big);
+    const region = field(r.screenshot_geometry, "region");
+    const x = number(field(region, "x")) orelse return error.InvalidScreenshot;
+    const y = number(field(region, "y")) orelse return error.InvalidScreenshot;
+    const rw = number(field(region, "width")) orelse return error.InvalidScreenshot;
+    const rh = number(field(region, "height")) orelse return error.InvalidScreenshot;
+    // Use original PNG dimensions, including Chromium/DPI rounding at viewport edges.
+    const sx = @as(f64, @floatFromInt(width)) / @as(f64, @floatFromInt(r.screenshot_width));
+    const sy = @as(f64, @floatFromInt(height)) / @as(f64, @floatFromInt(r.screenshot_height));
+    const left: c_int = @intFromFloat(@round(x * sx));
+    const top: c_int = @intFromFloat(@round(y * sy));
+    const right: c_int = @intFromFloat(@round((x + rw) * sx));
+    const bottom: c_int = @intFromFloat(@round((y + rh) * sy));
+    if (left != 0 or top != 0 or right != width or bottom != height) {
+        const png = try r.alloc().alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(data));
+        try std.base64.standard.Decoder.decode(png, data);
+        var cropped: ?[*]u8 = null;
+        var length: u32 = 0;
+        const hr = turf_crop_png(png.ptr, @intCast(png.len), left, top, right - left, bottom - top, &cropped, &length);
+        defer turf_free_png(cropped);
+        if (hr < 0 or cropped == null) {
+            r.failData(-32002, "Native PNG crop failed", .{ .nativeCode = hr });
+            return;
+        }
+        const encoded = try r.alloc().alloc(u8, std.base64.standard.Encoder.calcSize(length));
+        data = std.base64.standard.Encoder.encode(encoded, cropped.?[0..length]);
+        width = @intCast(right - left);
+        height = @intCast(bottom - top);
+    }
+    r.result(.{ .format = "png", .data = data, .width = width, .height = height, .region = region });
+}
 fn completed(r: *Request, action: Action, wide: []const u16) !void {
     const json = try std.unicode.utf16LeToUtf8Alloc(r.alloc(), wide);
     const parsed = try std.json.parseFromSlice(Value, r.alloc(), json, .{ .allocate = .alloc_always });
     const root = parsed.value;
     if (field(root, "error") != .null or field(root, "exceptionDetails") != .null) {
+        if (action == .screenshot_check) {
+            r.fail(-32004, "Page changed during screenshot; retry");
+            return;
+        }
         if (action == .diagnostic_started) diagnosticsStop(r.server);
         r.failData(-32002, "JavaScript or WebView2 operation failed", .{ .kind = "native_error", .context = "main" });
         return;
@@ -536,12 +597,42 @@ fn completed(r: *Request, action: Action, wide: []const u16) !void {
                 r.failData(if (std.mem.eql(u8, kind, "serialization_error")) -32003 else -32002, string(field(detail, "message")) orelse "JavaScript evaluation failed", detail);
             }
         },
+        .screenshot_frame => {
+            const frame = string(field(field(field(root, "frameTree"), "frame"), "id")) orelse return error.InvalidScreenshot;
+            try call(r, "Page.createIsolatedWorld", .{ .frameId = frame, .worldName = "TurfScreenshot" }, .screenshot_world);
+        },
+        .screenshot_world => {
+            const context = field(root, "executionContextId");
+            if (context != .integer) return error.InvalidScreenshot;
+            r.screenshot_context = context.integer;
+            try measureScreenshot(r, .screenshot_measure);
+        },
+        .screenshot_measure, .screenshot_check => {
+            if (!screenshotViewportValid(r)) return;
+            const encoded = string(field(field(root, "result"), "value")) orelse return error.InvalidScreenshot;
+            if (action == .screenshot_check) {
+                if (!std.mem.eql(u8, encoded, r.screenshot_measurement)) {
+                    r.fail(-32004, "Page, selector or viewport changed during screenshot; retry");
+                    return;
+                }
+                try screenshotResult(r);
+                return;
+            }
+            const measured = try std.json.parseFromSlice(Value, r.alloc(), encoded, .{ .allocate = .alloc_always });
+            const failure = field(measured.value, "error");
+            if (failure != .null) {
+                const code = number(field(failure, "code")) orelse return error.InvalidScreenshot;
+                r.failData(@intFromFloat(code), string(field(failure, "message")) orelse "Invalid screenshot region", field(failure, "data"));
+                return;
+            }
+            r.screenshot_geometry = measured.value;
+            r.screenshot_measurement = encoded;
+            try call(r, "Page.captureScreenshot", .{ .format = "png", .captureBeyondViewport = false }, .screenshot);
+        },
         .screenshot => {
-            const data = string(field(root, "data")) orelse return error.InvalidScreenshot;
-            if (data.len < 44) return error.InvalidScreenshot;
-            var header: [33]u8 = undefined;
-            try std.base64.standard.Decoder.decode(&header, data[0..44]);
-            r.result(.{ .format = "png", .data = data, .width = std.mem.readInt(u32, header[16..20], .big), .height = std.mem.readInt(u32, header[20..24], .big) });
+            if (!screenshotViewportValid(r)) return;
+            r.screenshot_data = string(field(root, "data")) orelse return error.InvalidScreenshot;
+            try measureScreenshot(r, .screenshot_check);
         },
         .mouse_down => try mouse(r, "mouseReleased", .dispatched),
         .key_down => try keyEvent(r, true),

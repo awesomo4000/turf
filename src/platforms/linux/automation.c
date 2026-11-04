@@ -47,7 +47,7 @@ struct Server {
     gulong diagnostic_signal;
     char *diagnostic_session, *diagnostic_handler, *diagnostic_state;
     GQueue diagnostics;
-    guint64 diagnostic_sequence;
+    guint64 diagnostic_sequence, navigation_generation;
     gsize diagnostic_bytes;
 };
 struct Client {
@@ -67,6 +67,10 @@ struct Request {
     JSCValue *id;
     gboolean done;
     guint timeout;
+    char *screenshot_options, *screenshot_measurement;
+    JSCValue *screenshot_geometry, *screenshot_result;
+    double screenshot_width, screenshot_height;
+    guint64 screenshot_generation;
 };
 static Server *server;
 static void client_close(Client *c);
@@ -115,6 +119,10 @@ static void request_unref(gpointer data) {
     if (--r->refs)
         return;
     g_clear_object(&r->id);
+    g_free(r->screenshot_options);
+    g_free(r->screenshot_measurement);
+    g_clear_object(&r->screenshot_geometry);
+    g_clear_object(&r->screenshot_result);
     client_unref(r->client);
     g_free(r);
 }
@@ -336,40 +344,126 @@ static void evaluated(GObject *source, GAsyncResult *result, gpointer data) {
     g_clear_object(&v);
     request_unref(r);
 }
+static void measure_screenshot(Request *r);
+static gboolean screenshot_viewport_valid(Request *r) {
+    JSCValue *v = viewport(r->client->server);
+    double width = 0, height = 0;
+    get_number(v, "width", &width); get_number(v, "height", &height);
+    g_object_unref(v);
+    if (width == r->screenshot_width && height == r->screenshot_height &&
+        r->screenshot_generation == r->client->server->navigation_generation) return TRUE;
+    reply(r, NULL, -32004, "Viewport changed during screenshot; retry");
+    return FALSE;
+}
 static void snapshot(GObject *source, GAsyncResult *result, gpointer data) {
     Request *r = data;
     GError *error = NULL;
-    GdkTexture *texture =
-        webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(source), result, &error);
-    if (!r->done) {
-        if (!texture)
-            reply(r, NULL, -32002, error ? error->message : "Snapshot failed");
+    GdkTexture *texture = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(source), result, &error);
+    if (!r->done && screenshot_viewport_valid(r)) {
+        if (!texture) reply(r, NULL, -32002, error ? error->message : "Snapshot failed");
         else {
-            GBytes *png = gdk_texture_save_to_png_bytes(texture);
-            gsize length;
-            const void *bytes = g_bytes_get_data(png, &length);
-            if (length > MAX_RESPONSE * 3 / 4 - 1024)
-                reply(r, NULL, -32003, "Screenshot exceeds response limit");
-            else {
-                char *base64 = g_base64_encode(bytes, length);
-                JSCValue *o = object(r->client->server);
-                string(o, "format", "png");
-                string(o, "data", base64);
-                number(o, "width", gdk_texture_get_width(texture));
-                number(o, "height", gdk_texture_get_height(texture));
-                reply(r, o, 0, NULL);
-                g_object_unref(o);
-                g_free(base64);
+            double x=0, y=0, width=0, height=0;
+            JSCValue *region = jsc_value_object_get_property(r->screenshot_geometry, "region");
+            get_number(region,"x",&x); get_number(region,"y",&y);
+            get_number(region,"width",&width); get_number(region,"height",&height);
+            int tw = gdk_texture_get_width(texture), th = gdk_texture_get_height(texture);
+            int left = (int)round(x * tw / r->screenshot_width), top = (int)round(y * th / r->screenshot_height);
+            int right = (int)round((x+width) * tw / r->screenshot_width), bottom = (int)round((y+height) * th / r->screenshot_height);
+            if (left < 0 || top < 0 || right > tw || bottom > th || right <= left || bottom <= top) {
+                reply(r, NULL, -32002, "Snapshot region has no pixel area");
+            } else {
+                GdkTexture *cropped = NULL;
+                if (left || top || right != tw || bottom != th) {
+                    gsize stride = (gsize)tw * 4, crop_stride = (gsize)(right-left) * 4;
+                    guchar *pixels = g_try_malloc_n(th, stride);
+                    guchar *crop = g_try_malloc_n(bottom-top, crop_stride);
+                    if (pixels && crop) {
+                        gdk_texture_download(texture, pixels, stride);
+                        for (int row=0; row<bottom-top; row++)
+                            memcpy(crop + row*crop_stride, pixels + (row+top)*stride + left*4, crop_stride);
+                        GBytes *storage = g_bytes_new_take(crop, (bottom-top)*crop_stride);
+                        cropped = gdk_memory_texture_new(right-left, bottom-top, GDK_MEMORY_DEFAULT, storage, crop_stride);
+                        g_bytes_unref(storage);
+                    } else {
+                        g_free(crop);
+                        reply(r, NULL, -32002, "Not enough memory for screenshot crop");
+                    }
+                    g_free(pixels);
+                }
+                if (!r->done) {
+                    GdkTexture *image = cropped ? cropped : texture;
+                    GBytes *png = gdk_texture_save_to_png_bytes(image);
+                    if (!png) reply(r, NULL, -32002, "PNG encoding failed");
+                    else {
+                        gsize length;
+                        const void *bytes = g_bytes_get_data(png, &length);
+                        if (length > MAX_RESPONSE * 3 / 4 - 1024) reply(r, NULL, -32003, "Screenshot exceeds response limit");
+                        else {
+                            char *base64 = g_base64_encode(bytes, length);
+                            JSCValue *o = object(r->client->server);
+                            string(o, "format", "png"); string(o, "data", base64);
+                            number(o, "width", gdk_texture_get_width(image)); number(o, "height", gdk_texture_get_height(image));
+                            jsc_value_object_set_property(o, "region", region);
+                            r->screenshot_result = o;
+                            g_free(base64);
+                            measure_screenshot(r);
+                        }
+                        g_bytes_unref(png);
+                    }
+                }
+                g_clear_object(&cropped);
             }
-            g_bytes_unref(png);
+            g_object_unref(region);
         }
     }
-    g_clear_object(&texture);
-    g_clear_error(&error);
-    request_unref(r);
+    g_clear_object(&texture); g_clear_error(&error); request_unref(r);
+}
+static void screenshot_measured(GObject *source, GAsyncResult *result, gpointer data) {
+    Request *r = data;
+    GError *error = NULL;
+    JSCValue *value = webkit_web_view_call_async_javascript_function_finish(WEBKIT_WEB_VIEW(source), result, &error);
+    if (!r->done && screenshot_viewport_valid(r)) {
+        char *json = value && jsc_value_is_string(value) ? jsc_value_to_string(value) : NULL;
+        if (r->screenshot_result) {
+            if (error || !json || strcmp(json, r->screenshot_measurement))
+                reply(r, NULL, -32004, "Page, selector or viewport changed during screenshot; retry");
+            else reply(r, r->screenshot_result, 0, NULL);
+        } else if (error || !json) reply(r, NULL, -32002, error ? error->message : "Could not measure screenshot");
+        else {
+            JSCValue *geometry = jsc_value_new_from_json(r->client->server->json, json);
+            JSCValue *failure = jsc_value_object_get_property(geometry, "error");
+            if (jsc_value_is_object(failure)) {
+                double code = -32002; get_number(failure,"code",&code);
+                char *message = get_string(failure,"message");
+                JSCValue *detail = jsc_value_object_get_property(failure,"data");
+                reply(r, jsc_value_is_object(detail) ? detail : NULL, (int)code, message);
+                g_object_unref(detail); g_free(message); g_object_unref(geometry);
+            } else {
+                r->screenshot_geometry = geometry;
+                r->screenshot_measurement = g_strdup(json);
+                webkit_web_view_get_snapshot(r->client->server->view, WEBKIT_SNAPSHOT_REGION_VISIBLE,
+                    WEBKIT_SNAPSHOT_OPTIONS_NONE, r->client->cancel, snapshot, request_ref(r));
+            }
+            g_object_unref(failure);
+        }
+        g_free(json);
+    }
+    g_clear_object(&value); g_clear_error(&error); request_unref(r);
+}
+static void measure_screenshot(Request *r) {
+    GVariantBuilder args;
+    g_variant_builder_init(&args, G_VARIANT_TYPE_VARDICT);
+    g_variant_builder_add(&args,"{sv}","options",g_variant_new_string(r->screenshot_options));
+    g_variant_builder_add(&args,"{sv}","viewportWidth",g_variant_new_double(r->screenshot_width));
+    g_variant_builder_add(&args,"{sv}","viewportHeight",g_variant_new_double(r->screenshot_height));
+    GVariant *arguments = g_variant_ref_sink(g_variant_builder_end(&args));
+    webkit_web_view_call_async_javascript_function(r->client->server->view, turf_screenshot_script, -1,
+        arguments, "TurfScreenshot", NULL, r->client->cancel, screenshot_measured, request_ref(r));
+    g_variant_unref(arguments);
 }
 static void load_changed(WebKitWebView *view, WebKitLoadEvent event, gpointer data) {
     Server *s = data;
+    if (event == WEBKIT_LOAD_STARTED) s->navigation_generation++;
     if (event != WEBKIT_LOAD_FINISHED || !s->navigation)
         return;
     Request *r = s->navigation;
@@ -1222,7 +1316,7 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         boolean(caps, "keyRepeat", FALSE);
         boolean(caps, "backgroundNativeInput", FALSE);
         string(caps, "screenshot", "viewport");
-        boolean(caps, "screenshotRegion", FALSE);
+        boolean(caps, "screenshotRegion", TRUE);
         number(caps, "maxRequestBytes", MAX_REQUEST);
         number(caps, "maxResponseBytes", MAX_RESPONSE);
         put(o, "capabilities", caps);
@@ -1275,14 +1369,12 @@ static void execute(Request *r, const char *method, JSCValue *params) {
         g_free(scheme);
         g_free(url);
     } else if (!strcmp(method, "screenshot")) {
-        if (jsc_value_object_has_property(params, "rect") || jsc_value_object_has_property(params, "selector") ||
-            jsc_value_object_has_property(params, "padding")) {
-            reply(r, NULL, -32004, "Region screenshots are not supported by this backend yet");
-            return;
-        }
-        webkit_web_view_get_snapshot(s->view, WEBKIT_SNAPSHOT_REGION_VISIBLE,
-                                     WEBKIT_SNAPSHOT_OPTIONS_NONE, r->client->cancel, snapshot,
-                                     request_ref(r));
+        r->screenshot_generation = s->navigation_generation;
+        r->screenshot_options = jsc_value_to_json(params, 0);
+        JSCValue *size = viewport(s);
+        get_number(size,"width",&r->screenshot_width); get_number(size,"height",&r->screenshot_height);
+        g_object_unref(size);
+        measure_screenshot(r);
     } else if (!strcmp(method, "resize")) {
         double width, height;
         if (!get_number(params, "width", &width) || !get_number(params, "height", &height) ||
