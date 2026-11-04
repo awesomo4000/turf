@@ -31,6 +31,12 @@ def expect_error(path, method, params, code):
 
 
 def feature_checks(path, folder, engine="WKWebView", check_position=True):
+    if engine in ('WebKitGTK', 'WebView2'):
+        assert client.request(path, 'info')['capabilities']['screenshotRegion'] is False
+        for params in ({'rect': {'x': 0, 'y': 0, 'width': 10, 'height': 10}},
+                       {'selector': 'body'}, {'padding': 1}):
+            expect_error(path, 'screenshot', params, -32004)
+        print('PASS: region screenshot capability and explicit unsupported errors', flush=True)
     def evaluate(expression):
         return client.request(path, "evaluate", {"expression": expression}).get("value")
     def wait_for(expression):
