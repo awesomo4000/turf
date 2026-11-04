@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 # Copyright (c) 2026 awesomo4000
-"""Send JSON-RPC to an explicitly named Turf Unix socket or Windows pipe."""
-import argparse
+"""Independent Python reference client for protocol tests; production uses turfctl."""
 import base64
 import json
 import os
 import tempfile
 import uuid
 import socket
-import sys
 from pathlib import Path
 
 
@@ -124,7 +122,7 @@ def grab(socket_path, source, output, chunk_bytes=256 * 1024):
     def evaluate(expression):
         return request(socket_path, "evaluate", {"expression": expression})["value"]
     try:
-        prepare = Path(__file__).with_name("grab.js").read_text()
+        prepare = (Path(__file__).resolve().parents[1] / "src/turfctl/grab.js").read_text()
         metadata = evaluate(f"{prepare}({token_js}, {json.dumps(source)})")
         with tempfile.NamedTemporaryFile(dir=output.parent, prefix="." + output.name + ".", delete=False) as stream:
             temporary = Path(stream.name)
@@ -155,52 +153,3 @@ def grab(socket_path, source, output, chunk_bytes=256 * 1024):
         except (OSError, ValueError, RuntimeError, KeyError):
             pass  # Navigation or shutdown already removes the page state; idle state expires.
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Examples (replace SOCKET with your explicit endpoint):
-  turf-client.py SOCKET evaluate '{"expression":"Promise.resolve({answer:42})"}'
-  turf-client.py SOCKET diagnostics '{"action":"start"}'
-  turf-client.py SOCKET diagnostics '{"after":0,"limit":64}'
-  turf-client.py SOCKET screenshot -o /tmp/turf.png
-
-Evaluation awaits promises and returns {type,value}; do not JSON.stringify objects.
-On failure, the CLI exits nonzero and writes the RPC error JSON to stderr.
-Diagnostics are opt-in. Start before navigation to capture startup/frame logs.
-Read results include session, nextCursor, latestCursor, droppedSinceCursor, and entries.
-Pass session and after=nextCursor on subsequent reads; reading does not clear logs.
-On backends with info.capabilities.screenshotRegion, screenshot accepts rect or selector,
-plus optional nonnegative padding. Returned region uses viewport points; image sizes use pixels.
-A timeout does not cancel JavaScript. Do not automatically retry mutating commands.
-""")
-    parser.add_argument("socket", help="Unix socket path or local Windows named pipe")
-    parser.add_argument("method", help="info, evaluate, navigate, screenshot, resize, screens, move, show, diagnostics, click, key, typeText, grab, close")
-    parser.add_argument("params", nargs="?", default="{}", help="JSON object")
-    parser.add_argument("-o", "--output", type=Path, help="Save screenshot PNG or grabbed binary data")
-    args = parser.parse_args()
-    try:
-        params = json.loads(args.params)
-        if not isinstance(params, dict):
-            raise ValueError("params must be a JSON object")
-        if args.method == "grab":
-            if args.output is None:
-                raise ValueError("grab requires --output")
-            result = grab(args.socket, params.get("source"), args.output)
-            print(json.dumps(result, ensure_ascii=False))
-            return 0
-        if args.output and args.method != "screenshot":
-            raise ValueError("--output requires screenshot or grab")
-        result = request(args.socket, args.method, params)
-        if args.output:
-            args.output.write_bytes(base64.b64decode(result["data"], validate=True))
-            result = {key: value for key, value in result.items() if key != "data"}
-            result["path"] = str(args.output)
-        print(json.dumps(result, ensure_ascii=False))
-    except (OSError, ValueError, RuntimeError, KeyError) as error:
-        print(str(error), file=sys.stderr)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

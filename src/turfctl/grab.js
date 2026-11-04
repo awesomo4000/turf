@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // Copyright (c) 2026 awesomo4000
-// Called by turf-client.py with a unique token and a URL or JavaScript expression.
+// Embedded in turfctl with a unique token and a URL or JavaScript expression.
 (async (token, source) => {
     const state = { blob: null, timer: null };
     window[token] = state;

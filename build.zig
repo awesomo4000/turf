@@ -13,6 +13,36 @@ pub fn build(b: *std.Build) void {
     const coverage_objects = b.option([]const u8, "macos-coverage-objects", "Directory of the Apple Clang coverage bridge (tools/coverage-macos.py)");
     if (coverage_objects != null and target_os != .macos) @panic("macOS coverage objects require a macOS target");
 
+    // A standalone client module for embedders and scripts, without GUI dependencies.
+    const client_mod = b.addModule("turfctl", .{
+        .root_source_file = b.path("src/turfctl/client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const ctl_mod = b.createModule(.{
+        .root_source_file = b.path("src/turfctl/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ctl_mod.addImport("turfctl", client_mod);
+    const ctl = b.addExecutable(.{ .name = "turfctl", .root_module = ctl_mod });
+    const install_ctl = b.addInstallArtifact(ctl, .{});
+    b.getInstallStep().dependOn(&install_ctl.step);
+    b.step("turfctl", "Build only the standalone automation client").dependOn(&install_ctl.step);
+    const client_example_mod = b.createModule(.{
+        .root_source_file = b.path("tests/fixtures/turfctl/library.zig"),
+        .target = target, .optimize = optimize,
+    });
+    client_example_mod.addImport("turfctl", client_mod);
+    const client_example = b.addExecutable(.{ .name = "turfctl-library-test", .root_module = client_example_mod });
+    const install_example = b.addInstallArtifact(client_example, .{});
+    const client_integration = b.step("test-turfctl-build", "Build client and library integration fixture");
+    client_integration.dependOn(&install_example.step);
+    client_integration.dependOn(&install_ctl.step);
+    const client_tests = b.addTest(.{ .root_module = client_mod });
+    const run_client_tests = b.addRunArtifact(client_tests);
+    b.step("test-turfctl", "Test the standalone automation client").dependOn(&run_client_tests.step);
+
     // Create turf library
     const libturf = b.createModule(.{
         .root_source_file = b.path("src/turf.zig"),
@@ -294,6 +324,7 @@ pub fn build(b: *std.Build) void {
     b.step("fuzz", "Fuzz queue/message properties; use --fuzz=10000 for a bounded run").dependOn(&run_fuzz.step);
 
     const tests_step = b.step("test", "Run unit tests");
+    tests_step.dependOn(&run_client_tests.step);
     tests_step.dependOn(&run_lib_unit_tests.step);
     tests_step.dependOn(&run_exe_unit_tests.step);
 }

@@ -150,7 +150,7 @@ def contract(endpoint, folder, baseline):
     for params in invalid: error(params, -32602)
     # The generic CLI must forward crop options and retain region metadata.
     output = folder / 'selector.png'
-    completed = subprocess.run([sys.executable, str(ROOT/'tools/turf-client.py'), str(endpoint),
+    completed = subprocess.run([str(ROOT/'zig-out/bin'/('turfctl.exe' if sys.platform == 'win32' else 'turfctl')), str(endpoint),
         'screenshot', json.dumps({'selector':'#target'}), '-o', str(output)], capture_output=True, text=True, check=True)
     result = json.loads(completed.stdout)
     assert result['region'] == region and result['width'] == selector['width']

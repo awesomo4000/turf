@@ -45,6 +45,12 @@ def main():
                         if result.returncode and mounted():
                             raise RuntimeError(f'Cannot unmount test runtime: {mount}')
     # A private display needs no window manager. X11 input targets Turf directly.
+    if '--client' in sys.argv:
+        sys.argv.remove('--inside-xvfb')
+        sys.argv.remove('--client')
+        import turfctl_client
+        turfctl_client.main()
+        return 0
     if '--regions' in sys.argv:
         sys.argv.remove('--inside-xvfb')
         sys.argv.remove('--regions')

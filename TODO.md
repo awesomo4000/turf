@@ -10,7 +10,8 @@ Work in order; macOS first. Windows/Linux ports follow verified contracts.
 - [x] Provide an agent task pack using only CLI help; record success, command count, source-inspection escapes, guesses, and arbitrary sleeps.
 - [ ] Run the task pack with agents of different capabilities; fix confusing contracts and help before expanding features.
 - [x] Improve evaluation CLI help and document error/cursor contracts.
-- [ ] Add evaluation file/stdin input.
+- [x] Replace the production Python client with turfctl, a standalone Zig CLI and reusable Zig module; retain an independent Python reference only for tests.
+- [x] Add evaluation file/stdin input through turfctl, plus JSON parameter files/stdin.
 - [ ] Add bounded condition waits with useful timeout diagnostics and no automatic mutation retries.
 - [x] Add macOS rect/selector screenshots with padding and capture geometry; keep pane selection in the embedding app.
 - [x] Port regional screenshots to Windows/Linux and run the shared pixel/geometry contract on each backend, including baseline PNG compatibility and scaled Windows desktop captures.

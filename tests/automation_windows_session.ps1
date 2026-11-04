@@ -10,6 +10,7 @@ param(
     [switch]$Diagnostics,
     [switch]$Placement,
     [switch]$Regions,
+    [switch]$Client,
     [string]$BaselineBinary
 )
 $ErrorActionPreference = 'Stop'
@@ -19,6 +20,7 @@ $Python = (Get-Command $Python).Source
 $test = Join-Path $PSScriptRoot 'automation_windows.py'
 if ($Protocol) { $test = Join-Path $PSScriptRoot 'automation_windows_protocol.py' }
 if ($Diagnostics) { $test = Join-Path $PSScriptRoot 'automation_diagnostics_portable.py' }
+if ($Client) { $test = Join-Path $PSScriptRoot 'turfctl_client.py' }
 if ($Regions) { $test = Join-Path $PSScriptRoot 'screenshot_regions_portable.py' }
 if ($Placement) { $test = Join-Path $PSScriptRoot 'window_placement.py' }
 $name = 'TurfSmoke-' + [Guid]::NewGuid().ToString('N')

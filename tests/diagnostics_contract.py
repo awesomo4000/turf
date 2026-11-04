@@ -64,7 +64,7 @@ def run_contract(endpoint, folder, fixture_url):
         finally:
             evaluate('JSON.stringify=window.savedJSON;delete window.savedJSON')
     assert evaluate('42')['value'] == 42
-    command = subprocess.run([sys.executable, str(ROOT/'tools/turf-client.py'), str(endpoint), 'evaluate', json.dumps({'expression':'throw new Error("cli failure")'})], capture_output=True, text=True)
+    command = subprocess.run([str(ROOT/'zig-out/bin'/('turfctl.exe' if sys.platform == 'win32' else 'turfctl')), str(endpoint), 'evaluate', json.dumps({'expression':'throw new Error("cli failure")'})], capture_output=True, text=True)
     assert command.returncode != 0 and not command.stdout and 'cli failure' in command.stderr
     print('PASS: evaluation values, promises, syntax/throw/rejection, hostile objects, serialization, CLI exit', flush=True)
 

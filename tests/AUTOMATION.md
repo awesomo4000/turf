@@ -151,7 +151,7 @@ by this runner. Protocol mutations are not coverage-guided Objective-C fuzzing.
 
 `agent_tasks.json` is the supervisor's manifest. Do not give it or fixture source
 to the agent. The agent gets only the prepared prompt, explicit socket, and
-`python3 tools/turf-client.py --help`. No discovery or gateway is required.
+`zig-out/bin/turfctl --help`. No discovery or gateway is required.
 
 For a trial, launch a separate test Turf with `--start-hidden --no-focus` and an
 explicit socket in a private temporary directory. Use `screens`, `resize`, and
@@ -285,3 +285,31 @@ dependencies, Objective-C, and headers. JavaScript is also outside this report.
 These are line-coverage results, not branch coverage; do not interpret placeholder
 branch fields in kcov's Cobertura XML as measured branches. Keep this report
 separate from the LLVM Objective-C report rather than averaging their percentages.
+
+# Zig automation client
+
+The production client is `turfctl`. `reference_client.py` remains an independent
+Python protocol oracle for server tests; it is not a runtime dependency of Turf
+or turfctl. Existing CLI screenshot and diagnostics checks invoke turfctl.
+
+```bash
+zig build test-turfctl test-turfctl-build
+python3 tests/turfctl_client.py --transport-only
+TURF_TEST_SCREEN='your display name' python3 tests/turfctl_client.py
+# Linux, on a private virtual desktop:
+python3 tests/automation_xvfb.py --client
+```
+
+On Windows, use the existing logged-in desktop session from SSH:
+
+```powershell
+powershell -File tests\automation_windows_session.ps1 -Binary zig-out\bin\turf.exe -Client
+```
+
+The transport checks use disposable fake Unix sockets or Windows named pipes.
+They cover fragmented responses, malformed envelopes, RPC detail preservation,
+response-size boundaries, timeouts, atomic output failure, and redirected stdio
+positions. Real-server tests cover file/stdin evaluation, regional PNG output,
+a 33 MiB grab, tiny chunks, failed reads, page-state cleanup, empty blobs, native
+commands, diagnostics, and a separately compiled Zig library consumer. Build
+`test-turfctl-build` first to install that consumer fixture.

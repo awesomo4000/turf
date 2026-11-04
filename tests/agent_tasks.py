@@ -8,6 +8,7 @@ not the task manifest or oracle code. Record the actual command transcript.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 from automation_macos import ROOT, client
 
@@ -31,7 +32,7 @@ def main():
         client.request(args.socket, 'diagnostics', {'action':'start'})
         client.request(args.socket, 'navigate', {'url':args.fixture_url})
         print(json.dumps({'task':task['id'], 'prompt':task['prompt'], 'socket':args.socket,
-                          'cli':str(ROOT/'tools/turf-client.py'),
+                          'cli':str(ROOT/'zig-out/bin'/('turfctl.exe' if os.name == 'nt' else 'turfctl')),
                           'rules':['Use only the supplied socket and CLI help.', 'Do not inspect source files.',
                                    'Record every command and its output.', 'Keep focus with the user.']}, indent=2))
     else:

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("turf_client", ROOT / "tools/turf-client.py")
+spec = importlib.util.spec_from_file_location("turf_client", ROOT / "tests/reference_client.py")
 client = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(client)
 

@@ -152,28 +152,95 @@ From another terminal, use the actual socket path printed by
 `echo "$automation_dir/control.sock"` in the first shell:
 
 ```bash
-python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock info
-python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock evaluate '{"expression":"document.title"}'
-python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock navigate '{"url":"https://example.com"}'
-python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock resize '{"width":800,"height":600}'
-python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock screenshot -o /tmp/turf.png
-python3 tools/turf-client.py /tmp/turf-automation.XXXXXX/control.sock close
+zig-out/bin/turfctl /tmp/turf-automation.XXXXXX/control.sock info
+zig-out/bin/turfctl /tmp/turf-automation.XXXXXX/control.sock evaluate '{"expression":"document.title"}'
+zig-out/bin/turfctl /tmp/turf-automation.XXXXXX/control.sock navigate '{"url":"https://example.com"}'
+zig-out/bin/turfctl /tmp/turf-automation.XXXXXX/control.sock resize '{"width":800,"height":600}'
+zig-out/bin/turfctl /tmp/turf-automation.XXXXXX/control.sock screenshot -o /tmp/turf.png
+zig-out/bin/turfctl /tmp/turf-automation.XXXXXX/control.sock close
 ```
 
 On Windows, use a unique local pipe name in two terminals:
 
 ```powershell
 .\zig-out\bin\turf.exe --no-focus --automation-socket '\\.\pipe\turf-dev'
-python tools\turf-client.py '\\.\pipe\turf-dev' info
-python tools\turf-client.py '\\.\pipe\turf-dev' screenshot -o turf.png
-python tools\turf-client.py '\\.\pipe\turf-dev' close
+zig-out\bin\turfctl.exe '\\.\pipe\turf-dev' info
+zig-out\bin\turfctl.exe '\\.\pipe\turf-dev' screenshot -o turf.png
+zig-out\bin\turfctl.exe '\\.\pipe\turf-dev' close
 ```
 
 Windows pipes have an ACL restricted to the current user, reject remote clients,
 and refuse to replace an existing pipe name. Pipe names use the `\\.\pipe\` prefix
 followed by a printable ASCII name without slashes or spaces. They disappear when
-the process exits. The Python client uses Windows overlapped I/O with a deadline;
-no extra Python packages are needed for Turf's protocol.
+the process exits. `turfctl` uses Zig's cancelable I/O with a total per-request
+deadline on both Unix sockets and Windows pipes. It needs no Python runtime.
+
+#### Using turfctl from scripts and Zig
+
+`zig build` installs `zig-out/bin/turfctl` alongside Turf. To build only the
+client, without linking a GUI backend, use `zig build turfctl`. Run
+`turfctl --help` for methods, parameters, and examples.
+
+Each successful command writes one UTF-8 JSON result to stdout. RPC failures write
+the original error object, including `code`, `message`, and `data`, to stderr and
+exit with status 1. Local failures also exit 1 and use
+`{"kind":"client_error","message":"ErrorName"}`. Help exits 0. No command retries
+after sending a request. The default total deadline is 35 seconds per request;
+`--timeout-ms N` changes it. A client timeout does not cancel remote JavaScript.
+
+Inline JSON remains supported. Files and stdin avoid shell quoting:
+
+```bash
+turfctl "$socket" evaluate --expression-file scene.js
+printf '%s' 'document.title' | turfctl "$socket" evaluate --expression-file -
+turfctl "$socket" screenshot --params-file crop.json -o panel.png
+```
+
+`--params-file PATH` reads a JSON object; `--expression-file PATH` reads raw
+JavaScript for `evaluate`. Both accept `-` for stdin and cannot be combined with
+inline JSON or each other. Screenshot and grab output uses a temporary file in
+the destination directory and atomically replaces the destination on success.
+The JSON metadata goes to stdout after the replacement. `grab` accepts optional
+`chunkBytes` from 1 to 524288, defaulting to 262144.
+
+The package exports a standalone `turfctl` Zig module. Add it to your executable
+in `build.zig`:
+
+```zig
+const turf_dep = b.dependency("turf", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("turfctl", turf_dep.module("turfctl"));
+```
+
+Then use your allocator and `std.Io` instance, such as `init.gpa` and `init.io`
+from `main(init: std.process.Init)`:
+
+```zig
+const turfctl = @import("turfctl");
+const client: turfctl.Client = .{
+    .allocator = init.gpa,
+    .io = init.io,
+    .endpoint = endpoint,
+};
+var reply = try client.evaluate("Promise.resolve({answer:42})");
+defer reply.deinit();
+if (reply.rpcError()) |failure| {
+    // failure retains the server code, message, and structured data.
+    _ = failure;
+} else {
+    const result = reply.result().?;
+    _ = result;
+}
+```
+
+`Client.request(method, params)` accepts a JSON-serializable Zig value;
+`requestJson(method, json)` accepts an encoded object. `evaluate`,
+`screenshot(params_json, output_path)`, and `grab(source, output_path, chunk_bytes)`
+provide the same conveniences as the CLI. RPC failures return a `Reply`; local
+transport, parsing, and file failures return Zig errors. Values borrowed from a
+reply expire when it is deinitialized. The client borrows its endpoint, allocator,
+and I/O instance. Its deadline uses `std.Io` concurrency/cancellation; concurrent
+callers also need a thread-safe allocator and I/O implementation. The module has
+no dependency on Turf's window library or a Python process.
 
 Embedding applications enable the same endpoint on the main thread after creating
 the window and before entering its event loop:
@@ -273,10 +340,10 @@ Diagnostics are disabled until explicitly started. Enable them **before navigati
 to capture startup logs and newly loaded frames:
 
 ```bash
-python3 tools/turf-client.py "$socket" diagnostics '{"action":"start"}'
-python3 tools/turf-client.py "$socket" navigate '{"url":"http://127.0.0.1:8000/diagnostics.html"}'
-python3 tools/turf-client.py "$socket" diagnostics '{"action":"read","after":0,"limit":64}'
-python3 tools/turf-client.py "$socket" diagnostics '{"action":"stop"}'
+zig-out/bin/turfctl "$socket" diagnostics '{"action":"start"}'
+zig-out/bin/turfctl "$socket" navigate '{"url":"http://127.0.0.1:8000/diagnostics.html"}'
+zig-out/bin/turfctl "$socket" diagnostics '{"action":"read","after":0,"limit":64}'
+zig-out/bin/turfctl "$socket" diagnostics '{"action":"stop"}'
 ```
 
 `start` returns a session ID and is idempotent while enabled. On Windows/Linux,
@@ -365,8 +432,8 @@ Check capabilities before using `move`; Linux/Wayland returns `-32004` for
 positioning and reports null desktop window coordinates.
 
 ```bash
-python3 tools/turf-client.py /path/to/control.sock screens
-python3 tools/turf-client.py /path/to/control.sock move \
+zig-out/bin/turfctl /path/to/control.sock screens
+zig-out/bin/turfctl /path/to/control.sock move \
   '{"screen":"ID-FROM-SCREENS","anchor":"top-right","x":16,"y":16}'
 ```
 
@@ -413,15 +480,15 @@ CoreGraphics. These are OS-provided frameworks; no additional library is bundled
 
 #### Grab binary data
 
-The Python client implements `grab` through chunked `evaluate` calls. `grab` is
+`turfctl` implements `grab` through chunked `evaluate` calls. `grab` is
 not a socket method. The source may be an HTTP(S), blob, or data URL, or JavaScript
 that returns a URL, base64 string, data URI, Blob, ArrayBuffer, or typed array.
 Promises are awaited. Browser origin and content-security rules still apply.
 
 ```bash
-python3 tools/turf-client.py /path/to/control.sock grab \
+zig-out/bin/turfctl /path/to/control.sock grab \
   '{"source":"document.querySelector(\"img\").currentSrc"}' -o /tmp/otter.jpg
-python3 tools/turf-client.py /path/to/control.sock grab \
+zig-out/bin/turfctl /path/to/control.sock grab \
   '{"source":"document.querySelector(\"canvas\").toDataURL()"}' -o /tmp/canvas.png
 ```
 
@@ -431,8 +498,8 @@ to the destination and replaces the destination only after the transfer succeeds
 It cleans up the page object on success and failure; abandoned objects expire
 after two minutes of inactivity. Navigation destroys the transfer state and
 causes an error. This bounds response and client-buffer sizes, but the complete
-Blob still occupies memory in the webview. Keep `grab.js` beside `turf-client.py`
-when copying the client elsewhere.
+Blob still occupies memory in the webview. The transfer script is embedded in
+`turfctl`; the client executable needs no companion scripts or Python runtime.
 
 #### Native input
 
@@ -481,11 +548,11 @@ A response acknowledges dispatch, not the
 completion of JavaScript event handlers. Poll the relevant page state afterward.
 
 ```bash
-python3 tools/turf-client.py /path/to/control.sock click '{"x":100,"y":120}'
-python3 tools/turf-client.py /path/to/control.sock key '{"key":"ArrowDown"}'
-python3 tools/turf-client.py /path/to/control.sock key '{"key":"ArrowRight","modifiers":["shift"]}'
-python3 tools/turf-client.py /path/to/control.sock key '{"key":"a","modifiers":["meta"]}'
-python3 tools/turf-client.py /path/to/control.sock typeText '{"text":"Hello, otter 🦦"}'
+zig-out/bin/turfctl /path/to/control.sock click '{"x":100,"y":120}'
+zig-out/bin/turfctl /path/to/control.sock key '{"key":"ArrowDown"}'
+zig-out/bin/turfctl /path/to/control.sock key '{"key":"ArrowRight","modifiers":["shift"]}'
+zig-out/bin/turfctl /path/to/control.sock key '{"key":"a","modifiers":["meta"]}'
+zig-out/bin/turfctl /path/to/control.sock typeText '{"text":"Hello, otter 🦦"}'
 ```
 
 Modifiers are `shift`, `control`, `alt`, and `meta`, which map to macOS Shift,
@@ -513,8 +580,8 @@ On macOS, Linux, and Windows, `info.capabilities.screenshotRegion` is true. Choo
 in viewport points or the first main-frame element matching a CSS selector:
 
 ```bash
-python3 tools/turf-client.py "$SOCKET" screenshot '{"rect":{"x":40,"y":30,"width":120,"height":80}}' -o /tmp/panel.png
-python3 tools/turf-client.py "$SOCKET" screenshot '{"selector":"#panel","padding":8}' -o /tmp/panel.png
+zig-out/bin/turfctl "$SOCKET" screenshot '{"rect":{"x":40,"y":30,"width":120,"height":80}}' -o /tmp/panel.png
+zig-out/bin/turfctl "$SOCKET" screenshot '{"selector":"#panel","padding":8}' -o /tmp/panel.png
 ```
 
 `rect` uses the coordinate units of `info.viewport`. Selector measurement
