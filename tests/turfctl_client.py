@@ -97,6 +97,18 @@ def envelope(result): return json.dumps({'jsonrpc':'2.0','id':1,'result':result}
 
 
 def transport_tests():
+    for args, message in (([], 'Missing endpoint.'), (['', 'info'], 'Missing endpoint.'),
+                          (['/tmp/unused-turf-endpoint'], 'Missing method'),
+                          (['/tmp/unused-turf-endpoint', ''], 'Missing method'),
+                          (['/tmp/unused-turf-endpoint', 'info', '{}', 'extra'], 'Too many positional arguments.')):
+        result=subprocess.run([str(CTL),*args],capture_output=True,text=True,encoding='utf-8',timeout=10)
+        assert result.returncode==1 and not result.stdout, result
+        failure=json.loads(result.stderr)
+        assert failure['kind']=='client_error' and failure['message'].startswith(message), failure
+        assert 'turfctl --help' in failure['message'], failure
+    result=subprocess.run([str(LIBRARY)],capture_output=True,text=True,encoding='utf-8',timeout=10)
+    assert result.returncode==1 and not result.stdout
+    assert 'Usage: turfctl-library-test ENDPOINT' in result.stderr and 'error: MissingEndpoint' not in result.stderr
     with tempfile.TemporaryDirectory(prefix='turfctl-test-',dir=None if os.name=='nt' else '/tmp') as directory:
         folder=Path(directory)
         packet=envelope({'unicode':'otter 🦦','value':42})

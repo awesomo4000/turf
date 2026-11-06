@@ -11,6 +11,7 @@ const help =
     \\Methods and parameters:
     \\  info, screens, show, close      No parameters
     \\  evaluate                       {"expression":"JavaScript"}; awaits promises
+    \\  emit                           {"topic":"name","data":JSON,"retain":false}
     \\  navigate                       {"url":"absolute URL"}
     \\  screenshot                     Optional rect or selector, plus padding
     \\  resize                         {"width":800,"height":600}
@@ -21,6 +22,12 @@ const help =
     \\  typeText                       {"text":"Unicode text"}
     \\  grab                           {"source":"URL or JS expression","chunkBytes":262144}
     \\
+    \\Emit shorthand: turfctl ENDPOINT emit TOPIC JSON [--retain]
+    \\  JSON may be - for stdin, or use TOPIC --data-file PATH.
+    \\  Clear retention with emit '{"topic":"name","clear":true}'.
+    \\  macOS first; main frame only. Page API: turf.on(topic, (data, meta) => ...).
+    \\  Replies count synchronous handler calls/failures, not rendering or async completion.
+    \\  Retention: 128 topics / 4 MiB; exact-URL reload replay; no disk persistence.
     \\Options:
     \\  -h, --help                     Show this help
     \\  -o, --output PATH              Save screenshot PNG or grabbed bytes atomically
@@ -48,7 +55,13 @@ const help =
 
 pub fn main(init: std.process.Init) !u8 {
     return run(init) catch |err| {
-        try printJson(init.io, init.gpa, Io.File.stderr(), .{ .kind = "client_error", .message = @errorName(err) });
+        const message = switch (err) {
+            error.MissingEndpoint => "Missing endpoint. Specify a Turf Unix socket path or Windows named pipe. Usage: turfctl ENDPOINT METHOD [JSON] [OPTIONS]. Run turfctl --help for examples.",
+            error.MissingMethod => "Missing method after the endpoint. Usage: turfctl ENDPOINT METHOD [JSON] [OPTIONS]. Run turfctl --help for available commands.",
+            error.TooManyArguments => "Too many positional arguments. Pass parameters as one quoted JSON object, or use --params-file PATH. Run turfctl --help for examples.",
+            else => @errorName(err),
+        };
+        try printJson(init.io, init.gpa, Io.File.stderr(), .{ .kind = "client_error", .message = message });
         return 1;
     };
 }
@@ -77,6 +90,8 @@ fn run(init: std.process.Init) !u8 {
     var output: ?[]const u8 = null;
     var params_file: ?[]const u8 = null;
     var expression_file: ?[]const u8 = null;
+    var retain = false;
+    var data_file: ?[]const u8 = null;
     var timeout: u32 = 35_000;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -91,15 +106,35 @@ fn run(init: std.process.Init) !u8 {
         } else if (std.mem.eql(u8, arg, "--expression-file")) {
             if (expression_file != null) return error.DuplicateOption;
             expression_file = args.next() orelse return error.MissingExpressionPath;
+        } else if (std.mem.eql(u8, arg, "--retain")) {
+            retain = true;
+        } else if (std.mem.eql(u8, arg, "--data-file")) {
+            if (data_file != null) return error.DuplicateOption;
+            data_file = args.next() orelse return error.MissingDataPath;
+        } else if (std.mem.eql(u8, arg, "-")) {
+            try positionals.append(a, arg);
         } else if (std.mem.eql(u8, arg, "--timeout-ms")) {
             timeout = try std.fmt.parseInt(u32, args.next() orelse return error.MissingTimeout, 10);
             if (timeout == 0) return error.InvalidTimeout;
         } else if (std.mem.startsWith(u8, arg, "-")) return error.UnknownOption else try positionals.append(a, arg);
     }
-    if (positionals.items.len < 2 or positionals.items.len > 3) return error.ExpectedEndpointMethodAndOptionalJson;
+    if (positionals.items.len == 0 or positionals.items[0].len == 0) return error.MissingEndpoint;
+    if (positionals.items.len == 1 or positionals.items[1].len == 0) return error.MissingMethod;
     const method = positionals.items[1];
+    const emit_short = std.mem.eql(u8, method, "emit") and (positionals.items.len == 4 or data_file != null);
+    if (positionals.items.len > (if (emit_short) @as(usize, 4) else 3)) return error.TooManyArguments;
+    if ((retain or data_file != null) and !std.mem.eql(u8, method, "emit")) return error.EmitOptionRequiresEmit;
+    if (retain and !emit_short) return error.RetainRequiresTopicAndData;
+    if (emit_short and (positionals.items.len < 3 or params_file != null or expression_file != null or
+        (data_file != null and positionals.items.len != 3))) return error.ConflictingInputOptions;
     if ((params_file != null and expression_file != null) or ((params_file != null or expression_file != null) and positionals.items.len == 3)) return error.ConflictingInputOptions;
-    const params_json = if (params_file) |path| try readInput(init.io, a, path) else if (expression_file) |path| blk: {
+    const params_json = if (emit_short) blk: {
+        const input = if (data_file) |path| try readInput(init.io, a, path)
+            else if (std.mem.eql(u8, positionals.items[3], "-")) try readInput(init.io, a, "-")
+            else positionals.items[3];
+        const parsed = try std.json.parseFromSlice(api.Value, a, input, .{});
+        break :blk try std.json.Stringify.valueAlloc(a, .{ .topic = positionals.items[2], .data = parsed.value, .retain = retain }, .{});
+    } else if (params_file) |path| try readInput(init.io, a, path) else if (expression_file) |path| blk: {
         if (!std.mem.eql(u8, method, "evaluate")) return error.ExpressionFileRequiresEvaluate;
         break :blk try std.json.Stringify.valueAlloc(a, .{ .expression = try readInput(init.io, a, path) }, .{});
     } else if (positionals.items.len == 3) positionals.items[2] else "{}";

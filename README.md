@@ -184,7 +184,8 @@ client, without linking a GUI backend, use `zig build turfctl`. Run
 Each successful command writes one UTF-8 JSON result to stdout. RPC failures write
 the original error object, including `code`, `message`, and `data`, to stderr and
 exit with status 1. Local failures also exit 1 and use
-`{"kind":"client_error","message":"ErrorName"}`. Help exits 0. No command retries
+`{"kind":"client_error","message":"..."}`. Missing positional arguments include
+a usage hint; other local failures may use a Zig error name. Help exits 0. No command retries
 after sending a request. The default total deadline is 35 seconds per request;
 `--timeout-ms N` changes it. A client timeout does not cancel remote JavaScript.
 
@@ -795,3 +796,70 @@ xvfb-run -a python3 tests/window_placement.py ./zig-out/bin/turf
 # Windows: use the existing logged-in desktop session when connecting over SSH.
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/automation_windows_session.ps1 -Binary zig-out/bin/turf.exe -Python python.exe -Placement
 ```
+
+### One-shot topic data (macOS automation)
+
+`emit` delivers JSON data to main-page widgets without evaluating caller-supplied
+JavaScript. Check `info.capabilities.emit` before use. Windows/Linux server ports
+and JSON-lines streaming are pending.
+
+```sh
+turfctl /tmp/turf/control.sock emit build-status '{"message":"Compiling","percent":42}' --retain
+some-tool --json | turfctl /tmp/turf/control.sock emit build-status - --retain
+turfctl /tmp/turf/control.sock emit build-status --data-file snapshot.json
+# Generic RPC form also works with --params-file:
+turfctl /tmp/turf/control.sock emit '{"topic":"build-status","clear":true}'
+```
+
+Register after the Turf API is available. The `turf-ready` window event fires
+when the injected API is installed; checking `window.turf` also covers scripts
+loaded later.
+
+```js
+function subscribe() {
+  const unsubscribe = turf.on('build-status', (data, meta) => {
+    document.querySelector('#status').textContent = data.message;
+    document.querySelector('progress').value = data.percent;
+    // meta: {topic, seq, ts, replayed}; ts is Unix milliseconds.
+  });
+  // Call unsubscribe() when this widget is removed.
+}
+if (window.turf?.on) subscribe();
+else window.addEventListener('turf-ready', subscribe, {once: true});
+```
+
+Multiple listeners are supported; `turf.on('*', handler)` receives all topics.
+Each listener gets a separate JSON value. Synchronous exceptions are counted and
+logged without preventing other listeners from running. Promise rejections are
+logged, but emit does not wait for handlers or rendering. The result reports
+`accepted`, `retained`, `cleared`, `seq`, `handlers`, and `failures`. Zero handlers
+is a successful delivery attempt. Existing `turf.onMessage` remains separate.
+
+Retention is opt-in, in memory for the automation session, with one value per
+topic, at most 128 topics and 4 MiB of serialized retained records. Exceeding a
+limit rejects the request without replacing the previous value. A non-retained
+emit does not replace or clear an earlier retained value. Explicit `clear:true`
+removes it from both host storage and the current page, without notifying handlers.
+Late subscribers receive retained values synchronously during `turf.on`, ordered
+by sequence. Reloads replay at document end. Replay requires the exact original
+main-document URL, including query and fragment; it is not an origin security
+boundary and does not distinguish different content served at that URL. Different
+URLs receive no automatic replay. HTML loaded without a base URL shares the
+`about:blank` scope, so clear retained topics when replacing it with unrelated UI. Iframes receive no automatic delivery; the host
+page must explicitly forward selected data using its own frame/origin policy.
+
+Topics must be 1..256 UTF-8 bytes; `*` is reserved for subscriptions. All JSON values
+are accepted, including null, false, arrays, and strings. The complete RPC request
+must fit the existing 1 MiB limit. Use strings for integer IDs beyond JavaScript's
+safe integer range. Use `textContent` for untrusted text rather than `innerHTML`.
+
+Emit requires a loaded main document. Retention is committed before page dispatch;
+a dispatch failure can therefore include `accepted:true` and `retained:true` in
+error data. Timeouts do not cancel delivery, and clients must not blindly retry.
+Sequence numbers are monotonic within an automation session. The Zig client offers
+`Client.emit(topic, data, retain)` and `Client.clearTopic(topic)` with the same
+`Reply` ownership and error handling as `request`.
+
+Run the native hidden-window contract with `python3 tests/emit_macos.py` after
+`zig build`. It covers JSON escaping, listeners, retained replay, URL isolation,
+clearing, memory limits, and turfctl file/stdin input without showing a window.

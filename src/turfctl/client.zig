@@ -68,6 +68,15 @@ pub const Client = struct {
         return parseReply(self.allocator, response.items);
     }
 
+    /// Deliver JSON data to main-page topic subscribers. Retention is opt-in.
+    pub fn emit(self: Client, topic: []const u8, data: anytype, retain: bool) !Reply {
+        return self.request("emit", .{ .topic = topic, .data = data, .retain = retain });
+    }
+
+    pub fn clearTopic(self: Client, topic: []const u8) !Reply {
+        return self.request("emit", .{ .topic = topic, .clear = true });
+    }
+
     pub fn evaluate(self: Client, expression: []const u8) !Reply {
         return self.request("evaluate", .{ .expression = expression });
     }

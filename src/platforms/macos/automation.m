@@ -20,6 +20,9 @@ extern unsigned long long NSMessageGeneration(void);
 typedef void (^AutomationReply)(id result, NSInteger code, NSString *message);
 
 @interface TurfAutomationServer : NSObject <WKScriptMessageHandler>
+@property (nonatomic, strong) NSMutableDictionary *retainedTopics;
+@property (nonatomic, strong) WKUserScript *retainedScript;
+@property (nonatomic) unsigned long long emitSequence;
 @property (atomic) BOOL stopped;
 @property (nonatomic) BOOL background;
 @property (atomic) BOOL closeRequested;
@@ -39,6 +42,8 @@ typedef void (^AutomationReply)(id result, NSInteger code, NSString *message);
 @property (nonatomic, copy) NSString *diagnosticState;
 @property (nonatomic, strong) WKUserScript *diagnosticScript;
 - (void)stopDiagnostics;
+- (void)updateRetainedScript;
+- (void)emitRequest:(NSDictionary *)params reply:(AutomationReply)reply;
 - (void)serve;
 - (void)execute:(NSDictionary *)request reply:(AutomationReply)reply;
 - (void)removeSocket;
@@ -227,6 +232,82 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
 }
 
 @implementation TurfAutomationServer
+// Only the script owned by this server is replaced; preserve embedder scripts.
+- (void)updateRetainedScript {
+    WKUserContentController *controller = self.view.configuration.userContentController;
+    if (self.retainedScript) {
+        NSMutableArray *scripts = [NSMutableArray array];
+        for (WKUserScript *script in controller.userScripts)
+            if (![script.source isEqual:self.retainedScript.source]) [scripts addObject:script];
+        [controller removeAllUserScripts];
+        for (WKUserScript *script in scripts) [controller addUserScript:script];
+        self.retainedScript = nil;
+    }
+    if (!self.retainedTopics.count) return;
+    NSArray *packets = [self.retainedTopics.allValues sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        return [a[@"seq"] compare:b[@"seq"]];
+    }];
+    NSData *json = [NSJSONSerialization dataWithJSONObject:packets options:0 error:nil];
+    NSString *text = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    NSData *literal = [NSJSONSerialization dataWithJSONObject:text options:NSJSONWritingFragmentsAllowed error:nil];
+    NSString *source = [NSString stringWithFormat:
+        @"(() => { for (const p of JSON.parse(%@)) { if (location.href === p.url) window.turf?._emit(p, true); } })();",
+        [[NSString alloc] initWithData:literal encoding:NSUTF8StringEncoding]];
+    self.retainedScript = [[WKUserScript alloc] initWithSource:source
+        injectionTime:WKUserScriptInjectionTimeAtDocumentEnd forMainFrameOnly:YES];
+    [controller addUserScript:self.retainedScript];
+}
+- (void)emitRequest:(NSDictionary *)params reply:(AutomationReply)reply {
+    NSString *topic = params[@"topic"];
+    id retain = params[@"retain"], clear = params[@"clear"];
+    if (![topic isKindOfClass:NSString.class] || !topic.length ||
+        [topic lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 256 || [topic isEqual:@"*"] ||
+        (retain && (![retain isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)retain) != CFBooleanGetTypeID())) ||
+        (clear && (![clear isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)clear) != CFBooleanGetTypeID())) ||
+        ([clear boolValue] ? (params[@"data"] != nil || retain != nil) : params[@"data"] == nil)) {
+        reply(nil, -32602, @"emit requires topic (1..256 UTF-8 bytes, not *), data, optional boolean retain; clear:true requires no data or retain"); return;
+    }
+    if (@available(macOS 11.0, *)) {
+        NSString *url = self.view.URL.absoluteString;
+        if (!url.length) url = @"about:blank";
+        if (self.view.loading) { reply(nil, -32004, @"emit requires a loaded main document"); return; }
+        NSData *data = [NSJSONSerialization dataWithJSONObject:params[@"data"] ?: NSNull.null
+            options:NSJSONWritingFragmentsAllowed error:nil];
+        if (!data) { reply(nil, -32602, @"emit data must be JSON"); return; }
+        if (!self.retainedTopics) self.retainedTopics = [NSMutableDictionary dictionary];
+        NSMutableDictionary *packet = [@{ @"topic": topic, @"json": [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding],
+            @"seq": @(self.emitSequence + 1), @"ts": @(NSDate.date.timeIntervalSince1970 * 1000),
+            @"retain": @([retain boolValue]), @"clear": @([clear boolValue]), @"url": url } mutableCopy];
+        if ([retain boolValue]) {
+            NSMutableDictionary *candidate = [self.retainedTopics mutableCopy];
+            candidate[topic] = packet;
+            NSData *encoded = [NSJSONSerialization dataWithJSONObject:candidate options:0 error:nil];
+            if (candidate.count > 128 || encoded.length > 4 * 1024 * 1024) {
+                reply(nil, -32004, @"Retained topic limit exceeded (128 topics / 4 MiB); clear unused topics"); return;
+            }
+        }
+        // Commit host retention before dispatch. A failed or timed-out dispatch must not be retried blindly.
+        self.emitSequence++;
+        if ([clear boolValue]) [self.retainedTopics removeObjectForKey:topic];
+        else if ([retain boolValue]) self.retainedTopics[topic] = packet;
+        if ([clear boolValue] || [retain boolValue]) [self updateRetainedScript];
+        unsigned long long generation = NSMessageGeneration();
+        [self.view callAsyncJavaScript:
+            @"if (location.href !== packet.url || typeof window.turf?._emit !== 'function') throw new Error('Turf topic delivery unavailable'); return window.turf._emit(packet);"
+            arguments:@{ @"packet": packet } inFrame:nil inContentWorld:WKContentWorld.pageWorld
+            completionHandler:^(id result, NSError *error) {
+                if (self.stopped) return;
+                if (error || NSMessageGeneration() != generation || ![result isKindOfClass:NSDictionary.class]) {
+                    reply(@{ @"accepted": @YES, @"retained": @([retain boolValue]), @"seq": packet[@"seq"] },
+                        -32002, error.localizedDescription ?: @"Document changed during emit"); return;
+                }
+                reply(@{ @"accepted": @YES, @"retained": @([retain boolValue]), @"cleared": @([clear boolValue]),
+                    @"seq": packet[@"seq"], @"handlers": result[@"handlers"] ?: @0,
+                    @"failures": result[@"failures"] ?: @0 }, 0, nil);
+            }];
+    } else reply(nil, -32000, @"emit requires macOS 11 or newer");
+}
+
 - (void)userContentController:(WKUserContentController *)controller didReceiveScriptMessage:(WKScriptMessage *)message {
     if (self.stopped || !self.diagnosticScript || ![message.name isEqual:self.diagnosticHandler]) return;
     NSDictionary *body = [message.body isKindOfClass:NSDictionary.class] ? message.body : nil;
@@ -598,8 +679,8 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
     if ([method isEqual:@"info"]) {
         reply(@{ @"protocolVersion": @1, @"pid": @(getpid()), @"engine": @"WKWebView",
             @"background": @(self.background), @"window": automationWindowInfo(view.window), @"title": view.title ?: @"", @"url": view.URL.absoluteString ?: @"", @"loading": @(view.loading),
-            @"methods": @[@"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"diagnostics", @"show", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
-            @"capabilities": @{ @"nativeInput": @"appkit", @"windowPosition": @YES, @"deferredShow": @YES, @"structuredErrors": @YES, @"diagnostics": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport", @"screenshotRegion": @YES,
+            @"methods": @[@"emit", @"info", @"evaluate", @"navigate", @"screenshot", @"resize", @"diagnostics", @"show", @"screens", @"move", @"click", @"key", @"typeText", @"close"],
+            @"capabilities": @{ @"emit": @YES, @"nativeInput": @"appkit", @"windowPosition": @YES, @"deferredShow": @YES, @"structuredErrors": @YES, @"diagnostics": @YES, @"awaitPromises": @YES, @"screenshot": @"viewport", @"screenshotRegion": @YES,
                 @"maxRequestBytes": @(maxRequestBytes), @"maxResponseBytes": @(maxResponseBytes) },
             @"viewport": @{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) } }, 0, nil);
     } else if ([method isEqual:@"diagnostics"]) {
@@ -663,6 +744,8 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
                 }
             }];
         } else reply(nil, -32000, @"Evaluation requires macOS 11 or newer");
+    } else if ([method isEqual:@"emit"]) {
+        [self emitRequest:params reply:reply];
     } else if ([method isEqual:@"navigate"]) {
         NSString *urlString = params[@"url"];
         NSURL *url = [urlString isKindOfClass:NSString.class] ? [NSURL URLWithString:urlString] : nil;
@@ -824,6 +907,9 @@ void TurfAutomationStop(void) {
     TurfAutomationServer *server = automationServer;
     if (!server) return;
     [server stopDiagnostics];
+    [server.view evaluateJavaScript:@"window.turf?._clearRetained()" completionHandler:nil];
+    [server.retainedTopics removeAllObjects];
+    [server updateRetainedScript];
     server.stopped = YES;
     server.navigationReply = nil;
     server.navigation = nil;

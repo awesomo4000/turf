@@ -70,8 +70,54 @@
         }
     }
 
+    // Topic events are separate from the existing native message registry.
+    const topics = new Map();
+    const retained = new Map();
+    function callTopic(handler, packet, replayed) {
+        try {
+            // Each listener receives its own JSON value, so mutation cannot affect peers.
+            const result = handler(JSON.parse(packet.json), Object.freeze({
+                topic: packet.topic, seq: packet.seq, ts: packet.ts, replayed
+            }));
+            Promise.resolve(result).catch(error => console.error('Turf topic handler rejected', error));
+            return true;
+        } catch (error) {
+            console.error('Turf topic handler failed', error);
+            return false;
+        }
+    }
+    function on(topic, handler) {
+        if (typeof topic !== 'string' || !topic.length || typeof handler !== 'function')
+            throw new TypeError('turf.on requires a nonempty topic and a function');
+        let handlers = topics.get(topic);
+        if (!handlers) topics.set(topic, handlers = new Set());
+        const subscription = {handler};
+        handlers.add(subscription);
+        for (const packet of [...retained.values()].sort((a, b) => a.seq - b.seq))
+            if (topic === '*' || topic === packet.topic) callTopic(handler, packet, true);
+        return () => {
+            handlers.delete(subscription);
+            if (!handlers.size && topics.get(topic) === handlers) topics.delete(topic);
+        };
+    }
+    function emitPacket(packet, replayed = false) {
+        if (packet.clear) { retained.delete(packet.topic); return {handlers: 0, failures: 0}; }
+        if (packet.retain) {
+            const previous = retained.get(packet.topic);
+            if (previous && previous.seq >= packet.seq) return {handlers: 0, failures: 0};
+            retained.set(packet.topic, packet);
+        }
+        const listeners = [...(topics.get(packet.topic) || []), ...(topics.get('*') || [])];
+        let failures = 0;
+        for (const {handler} of listeners) if (!callTopic(handler, packet, replayed)) failures++;
+        return {handlers: listeners.length, failures};
+    }
+
     // Export functions for use in other files
     window.turf = {
+        on: on,
+        _emit: emitPacket,
+        _clearRetained: () => retained.clear(),
         send: send,
         onWindowGeometryChanged: onWindowGeometryChanged,
         onFileSelected: onFileSelected,
@@ -79,6 +125,8 @@
         nativeFileSelect: nativeFileSelect,
         _handleNativeMessage: handleNativeMessage
     };
+
+    window.dispatchEvent(new Event('turf-ready'));
 
     const logoMode = typeof startupLogo === 'undefined' ? 'off' : startupLogo;
 

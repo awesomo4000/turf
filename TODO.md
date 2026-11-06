@@ -2,6 +2,12 @@
 
 Work in order; macOS first. Windows/Linux ports follow verified contracts.
 
+- [x] Add macOS one-shot turfctl emit with JSON arguments/file/stdin, reusable Zig client methods, turf.on subscriptions, unsubscribe, wildcard listeners, handler counts, and failure isolation. See [emit request](specs/feature-requests/01-emit-function.md).
+- [x] Add bounded opt-in host retention with exact-URL reload replay, late subscriptions, explicit clearing, and native regressions for JSON edge cases, limits, and diagnostics compatibility.
+- [ ] Port the emit server contract to Linux/Windows and run the shared delivery/retention tests. Keep capability reporting truthful until each backend is implemented.
+- [ ] Follow emit with bounded JSON-lines input and explicit backpressure; make latest-only coalescing opt-in for state feeds. Document a controlled iframe forwarding pattern first. Defer handler replies and reverse-direction listen until routing, multiple subscribers, and connection concurrency have defined contracts.
+- [ ] Add an embedder navigation-policy callback with allow/deny/handled decisions and unchanged behavior when unset. See [navigation-policy request](specs/feature-requests/00-turf-navpolicy-feature-request.md). Use host rather than initial for embedder loads, treat causes as best-effort metadata, and track automation origin through asynchronous callbacks. Define redirects, new-window requests, callback reentrancy, and handled-as-accepted semantics. Test refused automation navigation preserves the page and messaging, plus subframes, redirects, repeated loads, and no-policy compatibility.
+
 - [x] Capture evaluation exceptions and rejected promises as structured RPC errors.
 - [x] Distinguish JavaScript exceptions, result serialization failures, native errors, and timeouts.
 - [x] Add opt-in bounded console, uncaught-error, and unhandled-rejection diagnostics.
