@@ -10,6 +10,10 @@ from automation_diagnostics_macos import wait
 
 
 def main():
+    def topic_api(path):
+        text = path.read_text()
+        return text[text.index('    // Topic events'):text.index('    // Export functions')]
+    assert topic_api(ROOT/'src/web/turf.js') == topic_api(ROOT/'src/web/platforms/windows/turf.js')
     with tempfile.TemporaryDirectory(prefix='turf-emit-', dir='/tmp') as directory:
         folder = Path(directory)
         page = folder / 'page.html'
@@ -96,6 +100,40 @@ def main():
                 client.request(endpoint, 'emit', {'topic':'hostile','clear':True})
                 evaluate('catchall()')
                 assert emit('unobserved', 1)['handlers'] == 0
+                # Signals remove a group, including wildcards; explicit unsubscribe is idempotent.
+                evaluate('window.ac=new AbortController(); window.calls=[]; '
+                         'turf.on("sig",()=>calls.push(1),{signal:ac.signal}); '
+                         'turf.on("sig",()=>calls.push(2),{signal:ac.signal}); '
+                         'turf.on("other",()=>calls.push(3),{signal:ac.signal}); '
+                         'window.offSignal=turf.on("*",()=>calls.push(4),{signal:ac.signal});')
+                assert emit('sig', 1)['handlers'] == 3
+                evaluate('offSignal(); offSignal(); ac.abort();')
+                assert emit('sig', 2)['handlers'] == 0
+                assert emit('other', 2)['handlers'] == 0
+                emit('sig', 3, retain=True)
+                evaluate('window.replays=[]; turf.on("sig",d=>replays.push(d),{signal:ac.signal})();')
+                assert evaluate('replays.length') == 0
+                evaluate('window.fresh=new AbortController(); turf.on("sig",d=>replays.push(d),{signal:fresh.signal});')
+                assert evaluate('replays') == [3]
+                evaluate('fresh.abort()')
+                for value in ['null', '{}', '{aborted:false}', 'new EventTarget()', '42', '"signal"']:
+                    assert evaluate('(()=>{try { turf.on("sig",()=>{}, {signal:' + value + '}); return false; } '
+                                    'catch(e) {return e instanceof TypeError;}})()')
+                # A dispatch snapshots listeners before calling any of them.
+                evaluate('window.mid=new AbortController(); window.order=[]; '
+                         'turf.on("mid",()=>{order.push(1);mid.abort()},{signal:mid.signal}); '
+                         'turf.on("mid",()=>order.push(2),{signal:mid.signal});')
+                assert emit('mid', 1)['handlers'] == 2
+                assert evaluate('order') == [1, 2]
+                assert emit('mid', 2)['handlers'] == 0
+                # Cross-realm signals and callbacks from a replaced iframe.
+                evaluate('window.frame=document.createElement("iframe"); document.body.append(frame); '
+                         'window.cross=new frame.contentWindow.AbortController(); '
+                         'window.frameCalls=0; turf.on("cross",()=>frameCalls++,{signal:cross.signal});')
+                assert emit('cross', 1)['handlers'] == 1
+                evaluate('cross.abort(); frame.remove();')
+                assert emit('cross', 2)['handlers'] == 0
+                client.request(endpoint, 'emit', {'topic':'sig','clear':True})
                 for n in range(128): emit('limit'+str(n), n, retain=True)
                 expect_error(endpoint, 'emit', {'topic':'overflow','data':1,'retain':True}, -32004)
                 for n in range(128): client.request(endpoint,'emit',{'topic':'limit'+str(n),'clear':True})

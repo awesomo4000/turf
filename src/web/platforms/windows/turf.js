@@ -86,19 +86,30 @@
             return false;
         }
     }
-    function on(topic, handler) {
+    // WebIDL brand checking also accepts AbortSignals from same-origin iframes.
+    const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, 'aborted').get;
+    const addAbortListener = EventTarget.prototype.addEventListener;
+    const removeAbortListener = EventTarget.prototype.removeEventListener;
+    function on(topic, handler, options) {
         if (typeof topic !== 'string' || !topic.length || typeof handler !== 'function')
             throw new TypeError('turf.on requires a nonempty topic and a function');
+        const signal = options?.signal;
+        if (signal !== undefined && signalAborted.call(signal)) return () => {};
         let handlers = topics.get(topic);
         if (!handlers) topics.set(topic, handlers = new Set());
         const subscription = {handler};
         handlers.add(subscription);
-        for (const packet of [...retained.values()].sort((a, b) => a.seq - b.seq))
-            if (topic === '*' || topic === packet.topic) callTopic(handler, packet, true);
-        return () => {
+        const unsubscribe = () => {
             handlers.delete(subscription);
             if (!handlers.size && topics.get(topic) === handlers) topics.delete(topic);
+            if (signal !== undefined) removeAbortListener.call(signal, 'abort', unsubscribe);
         };
+        if (signal !== undefined) addAbortListener.call(signal, 'abort', unsubscribe, {once: true});
+        for (const packet of [...retained.values()].sort((a, b) => a.seq - b.seq)) {
+            if (!handlers.has(subscription)) break;
+            if (topic === '*' || topic === packet.topic) callTopic(handler, packet, true);
+        }
+        return unsubscribe;
     }
     function emitPacket(packet, replayed = false) {
         if (packet.clear) { retained.delete(packet.topic); return {handlers: 0, failures: 0}; }

@@ -828,6 +828,20 @@ if (window.turf?.on) subscribe();
 else window.addEventListener('turf-ready', subscribe, {once: true});
 ```
 
+For replaceable widgets, pass an AbortSignal to group subscriptions:
+
+```js
+const pane = new AbortController();
+turf.on('build-status', render, {signal: pane.signal});
+turf.on('logs', append, {signal: pane.signal});
+pane.abort(); // Remove both before replacing the pane.
+```
+
+An already-aborted signal registers nothing and receives no retained replay.
+The returned unsubscribe also detaches its abort listener. Signals from same-origin
+iframes work. Abort during an emit affects subsequent emits; listeners already in
+that dispatch snapshot still run. Non-AbortSignal values throw TypeError.
+
 Multiple listeners are supported; `turf.on('*', handler)` receives all topics.
 Each listener gets a separate JSON value. Synchronous exceptions are counted and
 logged without preventing other listeners from running. Promise rejections are
