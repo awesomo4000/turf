@@ -124,9 +124,22 @@
         return {handlers: listeners.length, failures};
     }
 
+    function publish(topic, data) {
+        if (typeof topic !== 'string' || !topic.length || topic === '*' || new TextEncoder().encode(topic).length > 256)
+            throw new TypeError('turf.publish requires a topic of 1..256 UTF-8 bytes, not *');
+        const json = JSON.stringify(data);
+        if (json === undefined) throw new TypeError('turf.publish requires JSON data');
+        if (new TextEncoder().encode(json).length > 65536) throw new RangeError('Published JSON exceeds 64 KiB');
+        const bridge = window.webkit?.messageHandlers?.__turf_topics__;
+        if (!bridge) throw new Error('Page-to-tool publishing is unavailable');
+        bridge.postMessage({kind: 'publish', topic, json});
+    }
+
     // Export functions for use in other files
     window.turf = {
         on: on,
+        publish: publish,
+        _documentToken: Date.now().toString(36) + Math.random().toString(36).slice(2),
         _emit: emitPacket,
         _clearRetained: () => retained.clear(),
         send: send,

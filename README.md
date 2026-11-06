@@ -801,7 +801,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests/automation_windows_ses
 
 `emit` delivers JSON data to main-page widgets without evaluating caller-supplied
 JavaScript. Check `info.capabilities.emit` before use. Windows/Linux server ports
-and JSON-lines streaming are pending.
+and JSON-lines input streaming are pending.
 
 ```sh
 turfctl /tmp/turf/control.sock emit build-status '{"message":"Compiling","percent":42}' --retain
@@ -855,7 +855,8 @@ limit rejects the request without replacing the previous value. A non-retained
 emit does not replace or clear an earlier retained value. Explicit `clear:true`
 removes it from both host storage and the current page, without notifying handlers.
 Late subscribers receive retained values synchronously during `turf.on`, ordered
-by sequence. Reloads replay at document end. Replay requires the exact original
+by sequence. Reloads request retained replay through a fixed document-end hook. Replay is
+asynchronous; wait for a subscriber event when a test needs to observe it. Replay requires the exact original
 main-document URL, including query and fragment; it is not an origin security
 boundary and does not distinguish different content served at that URL. Different
 URLs receive no automatic replay. HTML loaded without a base URL shares the
@@ -877,3 +878,57 @@ Sequence numbers are monotonic within an automation session. The Zig client offe
 Run the native hidden-window contract with `python3 tests/emit_macos.py` after
 `zig build`. It covers JSON escaping, listeners, retained replay, URL isolation,
 clearing, memory limits, and turfctl file/stdin input without showing a window.
+
+### Page-to-tool messages (request 02 branch, macOS)
+
+```js
+turf.publish('cmd', {action: 'snapshot'});
+```
+
+```sh
+# Receive new events after the initial cursor poll, until Ctrl-C:
+turfctl /tmp/turf/control.sock listen cmd --from-now
+# Or receive the buffered history first:
+turfctl /tmp/turf/control.sock listen '*'
+# One nonblocking poll, useful from other clients:
+turfctl /tmp/turf/control.sock recv '{"topic":"cmd","after":0}'
+```
+
+`publish` uses a separate channel from `turf.send`, which still targets the
+embedding application. It requires automation to be running, accepts the same
+topic names as emit, and permits at most 64 KiB of UTF-8 JSON per message.
+JSON.stringify semantics apply: unsupported top-level values, cycles, and BigInt
+throw; object properties with undefined values are omitted. A successful return
+means the message was posted to the native bridge, not that a tool received it.
+Direct publishing is main-frame-only; a same-origin iframe may explicitly call
+`parent.turf.publish` through an API its host chooses to expose.
+
+The host stores a session-wide queue bounded to 256 messages and 1 MiB, evicting
+the oldest messages. It survives page navigation but not automation shutdown.
+`recv` returns `session`, `messages`, `nextCursor`, and `droppedSinceCursor`.
+Each message is `{topic, seq, ts, data}`; timestamps are Unix milliseconds.
+Pass the returned session and cursor on the next poll. `limit` defaults to 64,
+maximum 256. Cursors advance over nonmatching topics too. Loss counts cover all
+published topics, including filtered-out ones, because evicted topic identities
+are not kept. Reads do not consume messages; independent clients have independent
+cursors. Stale sessions and cursors ahead of the queue are errors.
+
+`listen` polls at 100 ms intervals when idle and drains available batches without
+sleeping. It releases its connection on every poll, so it does not monopolize the
+server. Message JSON lines go to stdout. Loss reports go to stderr and exit 1;
+session changes, connection failures, and broken output pipes also stop the client.
+`--from-now` explicitly discards the initial backlog and any earlier loss; it does
+not hide later loss. No automatic command execution or exactly-once delivery is
+provided. Multiple listeners see the same messages. Other clients that hold a
+connection idle can still block this server; general connection multiplexing is
+separate work.
+
+Zig callers can use `Client.receive(topic, after, session)` or generic `request`
+for custom batch sizes. As with other methods, free each Reply after use.
+
+Retained emit updates now account for bytes per topic and replace only the changed
+record. A fixed bootstrap fetches current values on each document load, guarded
+by a document token and exact URL. No user scripts are rebuilt on each emit.
+The native tests exercise 1,000 updates with a large unrelated retained set,
+latest-value reload replay, bounded publish queues, independent cursors, and two
+CLI listeners while other automation commands run.

@@ -4,6 +4,8 @@
 import json
 import subprocess
 import tempfile
+import time
+import statistics
 from pathlib import Path
 from automation_macos import ROOT, client, expect_error
 from automation_diagnostics_macos import wait
@@ -63,6 +65,7 @@ def main():
                 client.request(endpoint, 'diagnostics', {'action':'start'})
                 client.request(endpoint, 'diagnostics', {'action':'stop'})
                 client.request(endpoint, 'navigate', {'url':page.as_uri()})
+                wait(lambda: evaluate('events.length') == 1)
                 assert evaluate('events.length') == 1, evaluate('({events,href:location.href,api:typeof turf.on})')
                 assert evaluate('events[0].data.n') == 1
                 assert evaluate('events[0].meta.replayed') is True
@@ -96,6 +99,7 @@ def main():
                 subprocess.run([str(ROOT/'zig-out/bin/turfctl-library-test'), str(endpoint), 'emit'], check=True)
                 emit('hostile', values, retain=True)
                 client.request(endpoint, 'navigate', {'url':page.as_uri()})
+                wait(lambda: evaluate('events.length') > 0)
                 assert evaluate('events.at(-1).data') == values
                 client.request(endpoint, 'emit', {'topic':'hostile','clear':True})
                 evaluate('catchall()')
@@ -141,9 +145,74 @@ def main():
                     params = {'topic':'large'+str(n),'data':'a'*900000,'retain':True}
                     if n < 4: client.request(endpoint,'emit',params)
                     else: expect_error(endpoint,'emit',params,-32004)
+                # Exercise replacement with a large unrelated retained set: emit should
+                # serialize only the changed topic, then replay the latest on reload.
+                timings=[]
+                for n in range(1000):
+                    before=time.monotonic()
+                    emit('fast', n, retain=True)
+                    timings.append(time.monotonic()-before)
+                first=statistics.median(timings[:100]); last=statistics.median(timings[-100:])
+                assert last < max(first*4, .03), (first,last)
+                print(f'PASS: 1000 retained updates, first/last median {first*1000:.2f}/{last*1000:.2f} ms')
+                client.request(endpoint, 'navigate', {'url':page.as_uri()})
+                wait(lambda: evaluate('events.some(e=>e.meta.topic === "fast" && e.data === 999)'))
+                assert evaluate('events.filter(e=>e.meta.topic === "fast").length') == 1
+                # Independent polling cursors, JSON scalar handling, and filtering.
+                assert client.request(endpoint,'info')['capabilities']['publish']
+                initial=client.request(endpoint,'recv')
+                assert initial['messages'] == [] and initial['nextCursor'] == 0
+                evaluate('turf.publish("cmd", {action:"snapshot"}); turf.publish("other", false); turf.publish("cmd", null);')
+                wait(lambda: client.request(endpoint,'recv')['nextCursor'] == 3)
+                batch=client.request(endpoint,'recv',{'topic':'cmd','limit':1})
+                assert batch['messages'][0]['data'] == {'action':'snapshot'}
+                cursor=batch['nextCursor']; session=batch['session']
+                tail=client.request(endpoint,'recv',{'topic':'cmd','after':cursor,'session':session})
+                assert [e['data'] for e in tail['messages']] == [None]
+                assert tail['nextCursor'] == 3
+                assert client.request(endpoint,'recv',{'topic':'cmd','limit':1}) == batch
+                expect_error(endpoint,'recv',{'after':1},-32602)
+                expect_error(endpoint,'recv',{'session':'stale'},-32004)
+                for params in [{'after':-1},{'after':True},{'limit':0},{'limit':257},{'topic':''}]:
+                    expect_error(endpoint,'recv',params,-32602)
+                for expression in ['turf.publish("*",1)', 'turf.publish("cmd",undefined)',
+                                   'turf.publish("cmd", "x".repeat(65537))', 'turf.publish("cmd",1n)']:
+                    assert evaluate('(()=>{try {'+expression+';return false;}catch(e){return true;}})()')
+                # Two CLI listeners do not hold the server connection between polls.
+                listeners=[]
+                try:
+                    for index in range(2):
+                        output=(folder/f'listen{index}.jsonl').open('w+')
+                        errors=(folder/f'listen{index}.err').open('w+')
+                        proc=subprocess.Popen([str(ROOT/'zig-out/bin/turfctl'),str(endpoint),'listen','cmd'],stdout=output,stderr=errors)
+                        listeners.append((proc,output,errors))
+                    wait(lambda: all((folder/f'listen{i}.jsonl').stat().st_size>0 for i in range(2)))
+                    evaluate('turf.publish("cmd", {action:"fresh"})')
+                    wait(lambda: all('fresh' in (folder/f'listen{i}.jsonl').read_text() for i in range(2)))
+                    assert client.request(endpoint,'info')['engine'] == 'WKWebView'
+                    assert emit('live', 1)['accepted']
+                finally:
+                    for proc,output,errors in listeners:
+                        proc.terminate(); proc.wait(timeout=5); output.close(); errors.close()
+                before=client.request(endpoint,'recv')['nextCursor']
+                evaluate('for(let i=0;i<300;i++) turf.publish("flood",i)')
+                wait(lambda: client.request(endpoint,'recv',{'limit':256})['nextCursor'] == before+300)
+                flooded=client.request(endpoint,'recv',{'after':before,'session':session,'limit':256})
+                assert len(flooded['messages']) == 256 and flooded['droppedSinceCursor'] == 44
+                assert flooded['messages'][0]['data'] == 44 and flooded['messages'][-1]['data'] == 299
+                failed=subprocess.run([str(ROOT/'zig-out/bin/turfctl'),str(endpoint),'listen','cmd'],capture_output=True,text=True,timeout=5)
+                assert failed.returncode == 1 and 'messages_dropped' in failed.stderr and not failed.stdout
+                # Byte bound is independent of the message-count bound.
+                before=client.request(endpoint,'recv',{'limit':256})['nextCursor']
+                evaluate('for(let i=0;i<20;i++) turf.publish("bytes", "x".repeat(60000))')
+                wait(lambda: client.request(endpoint,'recv',{'limit':256})['nextCursor'] == before+20)
+                large=client.request(endpoint,'recv',{'after':before,'session':session,'limit':256})
+                assert 0 < len(large['messages']) < 20
+                assert large['droppedSinceCursor'] == 20-len(large['messages'])
+                assert all(len(entry['data'])==60000 for entry in large['messages'])
                 client.request(endpoint, 'close')
                 assert process.wait(timeout=10) == 0
-                print('PASS: JSON values, safe topics, listeners, retention/reload/URL scope, clear, limits, CLI stdin/file')
+                print('PASS: emit/signals, retention, publish validation/count/byte limits, independent cursors, and concurrent listeners')
             except BaseException:
                 log.seek(0); print(log.read()); raise
             finally:

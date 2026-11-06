@@ -11,6 +11,8 @@ const help =
     \\Methods and parameters:
     \\  info, screens, show, close      No parameters
     \\  evaluate                       {"expression":"JavaScript"}; awaits promises
+    \\  recv                           {"topic":"*","after":0,"session":"...","limit":64}
+    \\  listen TOPIC                   Poll page messages as JSON lines until interrupted
     \\  emit                           {"topic":"name","data":JSON,"retain":false}
     \\  navigate                       {"url":"absolute URL"}
     \\  screenshot                     Optional rect or selector, plus padding
@@ -28,6 +30,10 @@ const help =
     \\  macOS first; main frame only. Page API: turf.on(topic, (data, meta) => ...).
     \\  Replies count synchronous handler calls/failures, not rendering or async completion.
     \\  Retention: 128 topics / 4 MiB; exact-URL reload replay; no disk persistence.
+    \\listen starts with buffered messages; --from-now skips the initial backlog.
+    \\It exits 1 on subsequent loss or session change.
+    \\Page API: turf.publish(topic, data), maximum 64 KiB JSON, main frame only.
+    \\Receive queue: 256 messages / 1 MiB per session; reads do not consume messages.
     \\Options:
     \\  -h, --help                     Show this help
     \\  -o, --output PATH              Save screenshot PNG or grabbed bytes atomically
@@ -56,6 +62,8 @@ const help =
 pub fn main(init: std.process.Init) !u8 {
     return run(init) catch |err| {
         const message = switch (err) {
+            error.ListenRequiresTopic => "Usage: turfctl ENDPOINT listen TOPIC [--from-now]. Use * for all topics; omit emit, file, and output options.",
+            error.FromNowRequiresListen => "--from-now is only supported by listen.",
             error.MissingEndpoint => "Missing endpoint. Specify a Turf Unix socket path or Windows named pipe. Usage: turfctl ENDPOINT METHOD [JSON] [OPTIONS]. Run turfctl --help for examples.",
             error.MissingMethod => "Missing method after the endpoint. Usage: turfctl ENDPOINT METHOD [JSON] [OPTIONS]. Run turfctl --help for available commands.",
             error.TooManyArguments => "Too many positional arguments. Pass parameters as one quoted JSON object, or use --params-file PATH. Run turfctl --help for examples.",
@@ -91,6 +99,7 @@ fn run(init: std.process.Init) !u8 {
     var params_file: ?[]const u8 = null;
     var expression_file: ?[]const u8 = null;
     var retain = false;
+    var from_now = false;
     var data_file: ?[]const u8 = null;
     var timeout: u32 = 35_000;
     while (args.next()) |arg| {
@@ -106,6 +115,8 @@ fn run(init: std.process.Init) !u8 {
         } else if (std.mem.eql(u8, arg, "--expression-file")) {
             if (expression_file != null) return error.DuplicateOption;
             expression_file = args.next() orelse return error.MissingExpressionPath;
+        } else if (std.mem.eql(u8, arg, "--from-now")) {
+            from_now = true;
         } else if (std.mem.eql(u8, arg, "--retain")) {
             retain = true;
         } else if (std.mem.eql(u8, arg, "--data-file")) {
@@ -121,6 +132,13 @@ fn run(init: std.process.Init) !u8 {
     if (positionals.items.len == 0 or positionals.items[0].len == 0) return error.MissingEndpoint;
     if (positionals.items.len == 1 or positionals.items[1].len == 0) return error.MissingMethod;
     const method = positionals.items[1];
+    if (std.mem.eql(u8, method, "listen")) {
+        if (positionals.items.len != 3 or params_file != null or expression_file != null or output != null or retain or data_file != null)
+            return error.ListenRequiresTopic;
+        const listener: api.Client = .{ .allocator = init.gpa, .io = init.io, .endpoint = positionals.items[0], .timeout_ms = timeout };
+        return listen(listener, positionals.items[2], from_now);
+    }
+    if (from_now) return error.FromNowRequiresListen;
     const emit_short = std.mem.eql(u8, method, "emit") and (positionals.items.len == 4 or data_file != null);
     if (positionals.items.len > (if (emit_short) @as(usize, 4) else 3)) return error.TooManyArguments;
     if ((retain or data_file != null) and !std.mem.eql(u8, method, "emit")) return error.EmitOptionRequiresEmit;
@@ -158,4 +176,44 @@ fn run(init: std.process.Init) !u8 {
     }
     try printJson(init.io, init.gpa, Io.File.stdout(), reply.result().?);
     return 0;
+}
+
+// Polling releases the server between requests. No background receiver or unbounded queue.
+fn listen(client: api.Client, topic: []const u8, from_now: bool) !u8 {
+    var starting = true;
+    var cursor: u64 = 0;
+    var session: ?[]const u8 = null;
+    defer if (session) |value| client.allocator.free(value);
+    while (true) {
+        var reply = if (starting and from_now) try client.request("recv", .{ .topic = "*", .limit = 256 })
+            else try client.receive(topic, cursor, session);
+        defer reply.deinit();
+        if (reply.rpcError()) |failure| {
+            try printJson(client.io, client.allocator, Io.File.stderr(), failure);
+            return 1;
+        }
+        const result = reply.result().?;
+        const received_session = api.text(api.field(result, "session")) orelse return error.InvalidResponse;
+        if (session == null) session = try client.allocator.dupe(u8, received_session)
+        else if (!std.mem.eql(u8, session.?, received_session)) return error.PublishSessionChanged;
+        const next = api.field(result, "nextCursor");
+        const lost = api.field(result, "droppedSinceCursor");
+        const messages = api.field(result, "messages");
+        if (next != .integer or next.integer < 0 or lost != .integer or lost.integer < 0 or messages != .array)
+            return error.InvalidResponse;
+        if (starting and from_now) {
+            starting = false;
+            cursor = @intCast(next.integer);
+            continue;
+        }
+        starting = false;
+        if (lost.integer > 0) {
+            try printJson(client.io, client.allocator, Io.File.stderr(), .{ .kind = "messages_dropped", .count = lost.integer });
+            return 1; // Never silently continue after losing command events.
+        }
+        if (@as(u64, @intCast(next.integer)) < cursor) return error.InvalidResponse;
+        for (messages.array.items) |entry| try printJson(client.io, client.allocator, Io.File.stdout(), entry);
+        cursor = @intCast(next.integer);
+        if (messages.array.items.len == 0) try Io.sleep(client.io, .fromMilliseconds(100), .awake);
+    }
 }

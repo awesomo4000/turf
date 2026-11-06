@@ -73,6 +73,12 @@ pub const Client = struct {
         return self.request("emit", .{ .topic = topic, .data = data, .retain = retain });
     }
 
+    /// Poll a bounded page-to-tool queue without holding a connection open.
+    pub fn receive(self: Client, topic: []const u8, after: u64, session: ?[]const u8) !Reply {
+        if (session) |id| return self.request("recv", .{ .topic = topic, .after = after, .session = id });
+        return self.request("recv", .{ .topic = topic, .after = after });
+    }
+
     pub fn clearTopic(self: Client, topic: []const u8) !Reply {
         return self.request("emit", .{ .topic = topic, .clear = true });
     }

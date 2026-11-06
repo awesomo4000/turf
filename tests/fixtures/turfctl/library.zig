@@ -23,6 +23,10 @@ pub fn main(init: std.process.Init) !u8 {
         var cleared = try client.clearTopic("library");
         defer cleared.deinit();
         if (cleared.rpcError() != null) return error.RemoteFailure;
+        var received = try client.receive("library", 0, null);
+        defer received.deinit();
+        if (received.rpcError() != null) return error.RemoteFailure;
+        if (turfctl.field(received.result().?, "messages") != .array) return error.WrongResult;
     }
     try std.Io.File.stdout().writeStreamingAll(init.io, "PASS: imported turfctl as a Zig library\n");
     return 0;
