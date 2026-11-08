@@ -59,8 +59,13 @@ static NSWindow *turfWindow = nil;
 static AppDelegate *turfAppDelegate = nil;
 static BOOL windowNoFocus = NO;
 static BOOL windowStartHidden = NO;
+static BOOL windowHiddenTitlebar = NO;
 static NSOpenPanel *openPanel = nil;
 static BOOL isShowingFileDialog = NO;
+
+// Only an actual, recent mouse press in this window may start a native drag.
+static NSEvent *windowDragMouseDown;
+static unsigned long long windowDragGeneration;
 
 // Custom WebView class to suppress beeps
 @interface TurfWebView : WKWebView
@@ -77,6 +82,17 @@ static BOOL isShowingFileDialog = NO;
 @implementation WebViewDelegate
 - (void)userContentController:(WKUserContentController *)userContentController
       didReceiveScriptMessage:(WKScriptMessage *)message {
+    if ([message.name isEqual:@"__turf_drag__"]) {
+        NSEvent *event = windowDragMouseDown;
+        if (message.frameInfo.mainFrame && event && event.window == turfWindow &&
+            windowHiddenTitlebar &&
+            windowDragGeneration == NSMessageGeneration() && (NSEvent.pressedMouseButtons & 1) &&
+            NSProcessInfo.processInfo.systemUptime - event.timestamp < 0.5) {
+            windowDragMouseDown = nil;
+            [turfWindow performWindowDragWithEvent:event];
+        }
+        return;
+    }
     NSString *messageBody = [NSString stringWithFormat:@"%@", message.body];
     NSDictionary *jsonDict = nil;
     if ([messageBody isKindOfClass:[NSString class]]) {
@@ -210,9 +226,27 @@ static BOOL isShowingFileDialog = NO;
 
 // Keep ordinary typing out of the shortcut dispatch path.
 @interface TurfWindow : NSWindow
+@property (nonatomic) BOOL cmdDragEnabled;
 @end
 
 @implementation TurfWindow
+// Borderless windows still participate in normal keyboard focus and app menus.
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return YES; }
+- (void)sendEvent:(NSEvent *)event {
+    if (event.type == NSEventTypeLeftMouseDown) {
+        if (self.cmdDragEnabled && (event.modifierFlags & NSEventModifierFlagCommand)) {
+            windowDragMouseDown = nil;
+            [self performWindowDragWithEvent:event];
+            return;
+        }
+        windowDragMouseDown = event;
+        windowDragGeneration = NSMessageGeneration();
+    } else if (event.type == NSEventTypeLeftMouseUp) {
+        windowDragMouseDown = nil;
+    }
+    [super sendEvent:event];
+}
 - (BOOL)performKeyEquivalent:(NSEvent *)event {
     // Ordinary typing belongs to keyDown, not WKWebView's shortcut path.
     // That path can consume printable keys such as unmodified lowercase e.
@@ -223,6 +257,8 @@ static BOOL isShowingFileDialog = NO;
     return [super performKeyEquivalent:event];
 }
 @end
+
+bool NSCmdDragEnabled(void) { return [(TurfWindow *)turfWindow cmdDragEnabled]; }
 
 @interface WindowDelegate : NSObject <NSWindowDelegate>
 @end
@@ -370,27 +406,43 @@ void NSLoadString(const char* html_content) {
 }
 
 void NSCreateWindow(int x, int y, int w, int h,
-                    const char* title, const char* jsInject, bool no_focus, bool start_hidden) {
+                    const char* title, const char* jsInject, bool no_focus, bool start_hidden, bool hidden_titlebar,
+                    bool hidden_controls, bool square_corners, bool cmd_drag) {
     @autoreleasepool {
         atomic_fetch_add(&documentGeneration, 1);
         atomic_store(&pendingMessageGeneration, 0);
         windowNoFocus = no_focus;
         windowStartHidden = start_hidden;
+        hidden_titlebar = hidden_titlebar || square_corners;
+        hidden_controls = hidden_controls || square_corners;
+        windowHiddenTitlebar = hidden_titlebar;
         NSRect frame = NSMakeRect(x, y, w, h);
         TurfWindow* window = [[TurfWindow alloc]
             initWithContentRect:frame
-            styleMask:NSWindowStyleMaskTitled|
+            styleMask:(square_corners ? NSWindowStyleMaskBorderless : NSWindowStyleMaskTitled)|
                       NSWindowStyleMaskClosable|
                       NSWindowStyleMaskMiniaturizable|
                       NSWindowStyleMaskResizable
             backing:NSBackingStoreBuffered
             defer:NO];
         window.releasedWhenClosed = NO;
+        window.cmdDragEnabled = cmd_drag;
         turfWindow = window;
+        if (hidden_controls) {
+            for (NSNumber *kind in @[@(NSWindowCloseButton), @(NSWindowMiniaturizeButton), @(NSWindowZoomButton)])
+                [window standardWindowButton:kind.unsignedIntegerValue].hidden = YES;
+        }
+        if (hidden_titlebar && !square_corners) {
+            window.styleMask |= NSWindowStyleMaskFullSizeContentView;
+            window.titleVisibility = NSWindowTitleHidden;
+            window.titlebarAppearsTransparent = YES;
+            window.movableByWindowBackground = NO;
+            [window setContentSize:NSMakeSize(w, h)];
+        }
 
         // Create a parent view. Webview uses this to avoid the unknown
         // subview traceback message. Add the subview to the window's content view.
-        NSView *parentView = [[NSView alloc] initWithFrame:frame];
+        NSView *parentView = [[NSView alloc] initWithFrame:window.contentView.bounds];
         [parentView setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
         [window.contentView addSubview:parentView];
 
@@ -406,7 +458,8 @@ void NSCreateWindow(int x, int y, int w, int h,
         // Inject a script that will be executed when the page is loaded.
         // This script will be used to send messages to the webview.
         //
-        NSString *scriptSource = [NSString stringWithUTF8String:jsInject];
+        NSString *scriptSource = [NSString stringWithFormat:@"const turfHiddenTitlebar = %@;\n%@",
+            hidden_titlebar ? @"true" : @"false", [NSString stringWithUTF8String:jsInject]];
         //
         // The script will be executed when the page is loaded.
         WKUserScript *script = [[WKUserScript alloc]
@@ -425,11 +478,13 @@ void NSCreateWindow(int x, int y, int w, int h,
         [userContentController
             addScriptMessageHandler:webViewDelegate name:@"__turf__"];
 
+        if (hidden_titlebar) [userContentController addScriptMessageHandler:webViewDelegate name:@"__turf_drag__"];
         config.userContentController = userContentController;
 
         // init the webview with the configuration
+        NSRect webFrame = parentView.bounds;
         webView = [[TurfWebView alloc]
-                          initWithFrame:parentView.bounds configuration:config];
+                          initWithFrame:webFrame configuration:config];
 
         // Initialize zoom level
         ((TurfWebView *)webView).currentZoomLevel = 1.0;
@@ -460,6 +515,7 @@ void NSCreateWindow(int x, int y, int w, int h,
         // [webView fixDisplayLayerAndEnableInspector];
 
         [parentView addSubview:webView];
+
 
         // Make sure the WebView has focus
         [window makeFirstResponder:webView];
@@ -508,6 +564,7 @@ void NSRunApplication(void) {
 }
 
 void NSDestroyWindow(void) {
+    windowDragMouseDown = nil;
     @autoreleasepool {
         atomic_fetch_add(&documentGeneration, 1);
         TurfAutomationStop();

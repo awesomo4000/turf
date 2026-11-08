@@ -7,3 +7,5 @@ void TurfAutomationNavigationFinished(WKNavigation *navigation, NSError *error);
 BOOL TurfAutomationIsBackground(void);
 
 void NSShowWindow(void);
+
+bool NSCmdDragEnabled(void);

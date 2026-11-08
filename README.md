@@ -509,6 +509,56 @@ responder chain. Linux uses XTest through Turf's socket API, activates the targe
 window, and delivers real X11 input. Clicks move the desktop pointer
 to the target and leave it there. This uses the desktop input stream, so concurrent user input
 can interfere. By default, startup, clicks, and key events activate Turf.
+Use `--title "Build status"` to set the native window title. The default is
+`𝓽𝓾𝓻𝓯`, matching the cursive lowercase logo. This does not change the page's
+HTML title or the title supplied by an embedder through `WindowConfig.title`.
+
+On macOS, `--titlebar hidden` extends the webview to the top of the window,
+under the traffic-light buttons. There is no reserved titlebar row. Edge resizing
+and native window controls remain. `--titlebar normal` is the default; embedders
+can set `WindowConfig.titlebar = .hidden`.
+
+Additional macOS window options:
+
+- `--window-controls hidden` hides the traffic lights; `normal` is the default.
+- `--square-corners` uses a borderless, square window. It implies hidden titlebar
+  and controls regardless of the other settings, while retaining edge resizing
+  and keyboard focus.
+- `--cmd-drag` makes Command + left drag move the window from anywhere, including
+  over page controls. It is off by default. Ordinary clicks remain unchanged.
+
+```sh
+turf --square-corners --cmd-drag page.html
+# Rounded corners, no traffic lights:
+turf --titlebar hidden --window-controls hidden --cmd-drag page.html
+```
+
+Embedders use `window_controls = .hidden`, `square_corners = true`, and
+`cmd_drag = true` in `WindowConfig`. These options are currently macOS-only.
+With controls hidden, close through the application menu/keyboard shortcut or
+`turfctl ENDPOINT close`. The title is still available to the operating system.
+
+Mark page areas with `data-turf-drag` to make them move the window. Buttons,
+links, form controls, editable content, focusable elements, and elements marked
+`data-turf-no-drag` remain interactive. Drag areas consume mouse-down to avoid
+starting text selection; ordinary page text outside them is unaffected. Leave
+space for the native traffic lights when arranging controls along the top:
+
+```html
+<header data-turf-drag style="height:40px;padding-left:88px;display:flex;align-items:center">
+  <button>Back</button>
+  <span>My application</span>
+  <div data-turf-no-drag>Selectable content</div>
+</header>
+```
+
+Dragging requires an actual mouse press in the main document. Synthetic DOM
+events cannot start it. Iframes do not automatically define drag areas in their
+parent. Viewport sizes and screenshots include the entire page, starting at the
+top of the window; webview screenshots do not include native traffic lights.
+Linux/Windows ports are pending; the library rejects hidden mode on those
+platforms instead of silently ignoring it.
+
 Use `--no-focus` to show the window without activating it, with or without an
 automation socket. For example:
 

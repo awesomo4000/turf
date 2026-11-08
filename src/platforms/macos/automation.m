@@ -187,6 +187,10 @@ static NSDictionary *automationWindowInfo(NSWindow *window) {
     NSScreen *screen = window.screen ?: NSScreen.mainScreen;
     NSRect frame = window.frame, work = screen.visibleFrame;
     return @{ @"screen": automationScreenID(screen), @"frame": automationRect(frame),
+        @"title": window.title ?: @"",
+        @"titlebar": (!(window.styleMask & NSWindowStyleMaskTitled) || (window.styleMask & NSWindowStyleMaskFullSizeContentView)) ? @"hidden" : @"normal",
+        @"windowControls": (!(window.styleMask & NSWindowStyleMaskTitled) || [window standardWindowButton:NSWindowCloseButton].hidden) ? @"hidden" : @"normal",
+        @"squareCorners": @(!(window.styleMask & NSWindowStyleMaskTitled)), @"cmdDrag": @(NSCmdDragEnabled()),
         @"x": @(NSMinX(frame) - NSMinX(work)), @"y": @(NSMaxY(work) - NSMaxY(frame)),
         @"visible": @(window.visible), @"focused": @(window.isKeyWindow) };
 }
@@ -871,7 +875,8 @@ static BOOL automationKey(NSString *key, NSString **characters, unsigned short *
             [width doubleValue] < 1 || [width doubleValue] > 8192 || [height doubleValue] < 1 || [height doubleValue] > 8192) {
             reply(nil, -32602, @"width and height must be numbers from 1 to 8192"); return;
         }
-        [view.window setContentSize:NSMakeSize([width doubleValue], [height doubleValue])];
+        CGFloat chromeHeight = view.window.contentView.bounds.size.height - view.bounds.size.height;
+        [view.window setContentSize:NSMakeSize([width doubleValue], [height doubleValue] + chromeHeight)];
         [view.window.contentView layoutSubtreeIfNeeded];
         reply(@{ @"width": @(view.bounds.size.width), @"height": @(view.bounds.size.height) }, 0, nil);
     } else if ([method isEqual:@"click"]) {

@@ -2,6 +2,8 @@
 
 Work in order; macOS first. Windows/Linux ports follow verified contracts.
 
+- [ ] Port hidden titlebar, hidden controls, square corners, and modifier-drag modes to GTK4 and Windows, preserving a native drag region, window controls, edge resizing, and viewport coordinates. macOS uses full-height web content under native controls and data-turf-drag regions.
+
 - [x] Add macOS one-shot turfctl emit with JSON arguments/file/stdin, reusable Zig client methods, turf.on subscriptions, unsubscribe, wildcard listeners, handler counts, and failure isolation. See [emit request](specs/feature-requests/01-emit-function.md).
 - [x] Add bounded opt-in host retention with exact-URL reload replay, late subscriptions, explicit clearing, and native regressions for JSON edge cases, limits, and diagnostics compatibility.
 - [x] Add optional AbortSignal subscription cleanup with pre-abort, unsubscribe, dispatch-snapshot, and cross-realm regression tests. See [request 02](specs/feature-requests/02-turf-on-signal-feature-request.md).

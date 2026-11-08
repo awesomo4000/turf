@@ -15,6 +15,10 @@ extern fn NSCreateWindow(
     js_inject: [*:0]const u8,
     no_focus: bool,
     start_hidden: bool,
+    hidden_titlebar: bool,
+    hidden_controls: bool,
+    square_corners: bool,
+    cmd_drag: bool,
 ) void;
 extern fn NSRunApplication() void;
 extern fn NSDestroyWindow() void;
@@ -109,6 +113,10 @@ pub const PlatformWindow = struct {
                 @ptrCast(turf_js.ptr),
                 config.no_focus,
                 config.start_hidden,
+                config.titlebar == .hidden,
+                config.window_controls == .hidden,
+                config.square_corners,
+                config.cmd_drag,
             );
             self.is_window_created = true;
         }

@@ -135,6 +135,19 @@
         bridge.postMessage({kind: 'publish', topic, json});
     }
 
+    // Dragging is opt-in. Buttons, form controls, editable content, and explicit
+    // no-drag areas keep their ordinary mouse behavior, including in shadow DOM.
+    if (typeof turfHiddenTitlebar !== 'undefined' && turfHiddenTitlebar) {
+        document.addEventListener('mousedown', event => {
+            if (!event.isTrusted || event.button !== 0 || event.ctrlKey || event.metaKey || event.altKey) return;
+            const path = event.composedPath().filter(node => node instanceof Element);
+            const interactive = 'a,button,input,select,textarea,label,summary,video,audio,[contenteditable],[tabindex],[data-turf-no-drag],[role="button"],[role="link"],[role="textbox"],[role="slider"],[role="checkbox"]';
+            if (!path.some(node => node.hasAttribute('data-turf-drag')) || path.some(node => node.matches(interactive))) return;
+            event.preventDefault();
+            window.webkit.messageHandlers.__turf_drag__.postMessage(null);
+        }, true);
+    }
+
     // Export functions for use in other files
     window.turf = {
         on: on,

@@ -50,6 +50,8 @@ const polling_js =
 
 // Re-export common types
 pub const WindowConfig = common.WindowConfig;
+pub const Titlebar = common.Titlebar;
+pub const WindowControls = common.WindowControls;
 pub const StartupLogo = common.StartupLogo;
 pub const Geometry = common.Geometry;
 pub const MessageQueue = common.MessageQueue;
@@ -72,6 +74,9 @@ pub const Window = struct {
         config: WindowConfig,
         message_queue: *MessageQueue,
     ) !Window {
+        if (builtin.target.os.tag != .macos and (config.titlebar == .hidden or
+            config.window_controls == .hidden or config.square_corners or config.cmd_drag))
+            return error.WindowChromeUnsupported;
         const platform = try backend.PlatformWindow.init(
             allocator,
             config,

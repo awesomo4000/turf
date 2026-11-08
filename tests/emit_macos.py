@@ -14,7 +14,7 @@ from automation_diagnostics_macos import wait
 def main():
     def topic_api(path):
         text = path.read_text()
-        return text[text.index('    // Topic events'):text.index('    // Export functions')]
+        return text[text.index('    // Topic events'):text.index('    // Dragging is opt-in.') if '    // Dragging is opt-in.' in text else text.index('    // Export functions')]
     assert topic_api(ROOT/'src/web/turf.js') == topic_api(ROOT/'src/web/platforms/windows/turf.js')
     with tempfile.TemporaryDirectory(prefix='turf-emit-', dir='/tmp') as directory:
         folder = Path(directory)

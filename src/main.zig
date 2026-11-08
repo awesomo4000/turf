@@ -18,11 +18,21 @@ pub fn main(init: std.process.Init) !void {
     var no_focus = false;
     var start_hidden = false;
     var automation_socket: ?[]const u8 = null;
+    var title: ?[]const u8 = null;
+    var titlebar: turf.Titlebar = .normal;
+    var window_controls: turf.WindowControls = .normal;
+    var square_corners = false;
+    var cmd_drag = false;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--no-focus] [--start-hidden] [--automation-socket PATH] [URL or file path]\n" ++
+            try std.Io.File.stdout().writeStreamingAll(init.io, "Usage: turf [--title TEXT] [--titlebar normal|hidden] [--window-controls normal|hidden] [--square-corners] [--cmd-drag] [--no-focus] [--start-hidden] [--automation-socket PATH] [URL or file path]\n" ++
                 "       turf -h | --help\n\n" ++
                 "With no arguments, opens the default page.\n" ++
+                "--title TEXT sets the window title (default: 𝓽𝓾𝓻𝓯).\n" ++
+                "--titlebar hidden extends the page under window controls; data-turf-drag marks drag areas (macOS).\n" ++
+                "--window-controls hidden hides the traffic-light buttons (macOS).\n" ++
+                "--square-corners uses a borderless window; implies hidden titlebar and controls (macOS).\n" ++
+                "--cmd-drag lets Command + left drag move the window from anywhere (macOS).\n" ++
                 "--no-focus shows the window without activating it.\n" ++
                 "--start-hidden waits for automation show before displaying the window.\n\n" ++
                 "Examples:\n" ++
@@ -31,6 +41,28 @@ pub fn main(init: std.process.Init) !void {
                 "  turf index.html\n" ++
                 "  turf /path/to/file.html\n");
             return;
+        } else if (std.mem.eql(u8, arg, "--window-controls")) {
+            const mode = args.next() orelse "";
+            window_controls = std.meta.stringToEnum(turf.WindowControls, mode) orelse {
+                try std.Io.File.stderr().writeStreamingAll(init.io, "--window-controls requires normal or hidden.\n");
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--square-corners")) {
+            square_corners = true;
+        } else if (std.mem.eql(u8, arg, "--cmd-drag")) {
+            cmd_drag = true;
+        } else if (std.mem.eql(u8, arg, "--titlebar")) {
+            const mode = args.next() orelse "";
+            titlebar = std.meta.stringToEnum(turf.Titlebar, mode) orelse {
+                try std.Io.File.stderr().writeStreamingAll(init.io, "--titlebar requires normal or hidden. Hidden mode is currently supported on macOS.\n");
+                std.process.exit(1);
+            };
+        } else if (std.mem.eql(u8, arg, "--title")) {
+            if (title != null) return error.DuplicateTitle;
+            title = args.next() orelse {
+                try std.Io.File.stderr().writeStreamingAll(init.io, "--title requires text. Example: turf --title \"Build status\"\n");
+                std.process.exit(1);
+            };
         } else if (std.mem.eql(u8, arg, "--automation-socket")) {
             if (automation_socket != null) return error.DuplicateAutomationSocket;
             automation_socket = args.next() orelse return error.MissingAutomationSocketPath;
@@ -48,6 +80,9 @@ pub fn main(init: std.process.Init) !void {
 
     if (start_hidden and automation_socket == null) return error.StartHiddenRequiresAutomation;
 
+    const window_title = try allocator.dupeSentinel(u8, title orelse "𝓽𝓾𝓻𝓯", 0);
+    defer allocator.free(window_title);
+
     // Create message queue externally
     var message_queue = turf.MessageQueue.init(allocator);
     defer message_queue.deinit();
@@ -60,7 +95,11 @@ pub fn main(init: std.process.Init) !void {
             .width = 600,
             .height = 800,
         },
-        .title = "Turf",
+        .title = window_title,
+        .titlebar = titlebar,
+        .window_controls = window_controls,
+        .square_corners = square_corners,
+        .cmd_drag = cmd_drag,
         .no_focus = no_focus,
         .start_hidden = start_hidden,
     };

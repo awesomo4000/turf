@@ -6,6 +6,7 @@
 void onWindowEvent(int x, int y, int w, int h) {}
 void onWindowGeometryEvent(int x, int y, int w, int h) {}
 void onJavaScriptMessage(const char *message) {}
+void onDocumentChanging(void) {}
 
 static NSWindow *cover;
 static NSRunningApplication *previousApp;
@@ -99,7 +100,7 @@ int main(int argc, const char **argv) {
             if (screenName.length && [screen.localizedName localizedCaseInsensitiveContainsString:screenName]) { target = screen; matches++; }
         }
         if (matches != 1) { fprintf(stderr, "TURF_TEST_SCREEN must match exactly one display; refusing to show\n"); return 1; }
-        NSCreateWindow(0, 0, 420, 220, "Turf visibility diagnostic", "", background, false);
+        NSCreateWindow(0, 0, 420, 220, "Turf visibility diagnostic", "", background, false, false, false, false, false);
         NSRect work = target.visibleFrame, frame = webView.window.frame;
         CGFloat x = NSMinX(work) + (work.size.width - frame.size.width) / 2;
         CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame) - NSMaxY(work);

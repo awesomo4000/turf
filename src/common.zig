@@ -19,9 +19,19 @@ pub const StartupLogo = enum {
 };
 
 // Common window configuration
+pub const Titlebar = enum { normal, hidden };
+pub const WindowControls = enum { normal, hidden };
+
 pub const WindowConfig = struct {
     geometry: Geometry,
     title: [:0]const u8,
+    /// Full-height web content under native controls; data-turf-drag marks drag areas (macOS).
+    titlebar: Titlebar = .normal,
+    window_controls: WindowControls = .normal,
+    /// Use a borderless, square window; implies hidden titlebar and controls (macOS).
+    square_corners: bool = false,
+    /// Command + left mouse down starts native window dragging (macOS).
+    cmd_drag: bool = false,
     startup_logo: StartupLogo = .off,
     /// Show without activating the application.
     no_focus: bool = false,
